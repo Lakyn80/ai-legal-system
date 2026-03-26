@@ -1,0 +1,14 @@
+.env
+backend/.env
+frontend/.env.local
+backend/storage/
+workspace_data/
+Sb_*_IZ.zip
+Sb_*_IZ/
+backend/app/__pycache__/
+backend/tests/__pycache__/
+**/__pycache__/
+*.pyc
+frontend/.next/
+frontend/node_modules/
+qdrant_storage/

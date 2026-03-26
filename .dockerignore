@@ -1,0 +1,13 @@
+.git
+.github
+.env
+backend/.env
+frontend/.env.local
+workspace_data/
+Sb_2012_89_2026-01-01_IZ.zip
+backend/storage/
+backend/app/__pycache__/
+backend/tests/__pycache__/
+frontend/.next/
+frontend/node_modules/
+qdrant_storage/

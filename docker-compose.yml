@@ -1,0 +1,75 @@
+services:
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: ai-legal-redis
+    ports:
+      - "${REDIS_HOST_PORT:-6380}:6379"
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    container_name: ai-legal-qdrant
+    ports:
+      - "${QDRANT_HOST_PORT:-6335}:6333"
+      - "${QDRANT_GRPC_HOST_PORT:-6336}:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ai-legal-backend
+    depends_on:
+      - redis
+      - qdrant
+    environment:
+      APP_NAME: ${APP_NAME:-AI Legal System Backend}
+      APP_ENV: ${APP_ENV:-development}
+      API_PREFIX: ${API_PREFIX:-/api}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3010}
+      STORAGE_PATH: ${STORAGE_PATH:-/app/storage}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-legal_documents}
+      QDRANT_COLLECTION_ALIAS: ${QDRANT_COLLECTION_ALIAS:-legal_documents_active}
+      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      EXACT_CACHE_ENABLED: ${EXACT_CACHE_ENABLED:-false}
+      EXACT_CACHE_TTL_SECONDS: ${EXACT_CACHE_TTL_SECONDS:-3600}
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
+      SEMANTIC_CACHE_TTL_SECONDS: ${SEMANTIC_CACHE_TTL_SECONDS:-7200}
+      SEMANTIC_CACHE_SIMILARITY_THRESHOLD: ${SEMANTIC_CACHE_SIMILARITY_THRESHOLD:-0.93}
+      SEMANTIC_CACHE_TOP_K: ${SEMANTIC_CACHE_TOP_K:-3}
+      RESPONSE_SCHEMA_VERSION: ${RESPONSE_SCHEMA_VERSION:-v1}
+      STRATEGY_PROMPT_VERSION: ${STRATEGY_PROMPT_VERSION:-v1}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hash}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Alibaba-NLP/gte-multilingual-base}
+      EMBEDDING_FALLBACK_PROVIDER: ${EMBEDDING_FALLBACK_PROVIDER:-hash}
+      EMBEDDING_HASH_DIMENSION: ${EMBEDDING_HASH_DIMENSION:-384}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      CHUNK_SIZE: ${CHUNK_SIZE:-1200}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-180}
+      TOP_K_DEFAULT: ${TOP_K_DEFAULT:-6}
+    volumes:
+      - backend_storage:/app/storage
+    ports:
+      - "${BACKEND_PORT:-8030}:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8030}
+    container_name: ai-legal-frontend
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8030}
+    ports:
+      - "${FRONTEND_PORT:-3010}:3000"
+
+volumes:
+  qdrant_storage:
+  backend_storage:

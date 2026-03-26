@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f7f3ea;
+  --foreground: #0f172a;
+  --panel: rgba(255, 255, 255, 0.82);
+  --font-serif: "Palatino Linotype", "Book Antiqua", "Iowan Old Style", "Georgia", serif;
+  --font-sans: "Aptos", "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+body {
+  min-height: 100vh;
+  font-family: var(--font-sans), sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(182, 134, 44, 0.22), transparent 28%),
+    radial-gradient(circle at top right, rgba(22, 66, 60, 0.18), transparent 22%),
+    linear-gradient(180deg, #f8f4eb 0%, #eef2f4 100%);
+  color: var(--foreground);
+}
+
+.font-serif {
+  font-family: var(--font-serif), serif;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.35));
+  pointer-events: none;
+}
+
+* {
+  border-color: rgba(51, 65, 85, 0.15);
+}
+
+@layer components {
+  .panel {
+    @apply rounded-3xl border border-white/70 bg-white/75 shadow-panel backdrop-blur;
+  }
+
+  .input-field {
+    @apply w-full rounded-2xl border border-slate-300/80 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-brass focus:ring-2 focus:ring-brass/20;
+  }
+
+  .action-button {
+    @apply inline-flex items-center justify-center rounded-2xl bg-ink px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .secondary-button {
+    @apply inline-flex items-center justify-center rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50;
+  }
+}
