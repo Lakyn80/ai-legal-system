@@ -38,6 +38,7 @@ _TEXT_FRAGMENT_TYPES: frozenset[str] = frozenset({
 
 _RE_HTML = re.compile(r"<[^>]+>")
 _RE_WS = re.compile(r"\s+")
+_RE_PARAGRAPH = re.compile(r"§\s*(\d+[a-z]?)", re.IGNORECASE)
 
 
 def _clean(xhtml: str) -> str:
@@ -72,6 +73,8 @@ def _iter_fragments(data: dict) -> Iterator[dict]:
     predpis_cislo: str = meta.get("predpisCislo") or ""
     law_iri = _law_iri_from_predpis_cislo(predpis_cislo)
 
+    current_paragraph: str | None = None
+
     for frag in data.get("fragmenty") or []:
         typ: str = frag.get("typ") or ""
         if typ not in _TEXT_FRAGMENT_TYPES:
@@ -85,11 +88,20 @@ def _iter_fragments(data: dict) -> Iterator[dict]:
         if not text:
             continue
 
+        if typ == "Paragraf":
+            match = _RE_PARAGRAPH.search(text)
+            current_paragraph = match.group(1) if match else None
+        else:
+            match = _RE_PARAGRAPH.search(text)
+            if match:
+                current_paragraph = match.group(1)
+
         fragment_id = frag.get("fragmentId")
         yield {
             "id":      f"{law_iri}/{fragment_id}",
             "law_iri": law_iri,
             "text":    text,
+            "paragraph": current_paragraph,
         }
 
 
