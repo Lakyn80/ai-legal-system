@@ -12,3 +12,17 @@ backend/tests/__pycache__/
 frontend/.next/
 frontend/node_modules/
 qdrant_storage/
+
+# Data files — not versioned
+esbirka_data/
+laws_dataset.json
+laws_dataset_enriched.json
+laws_failed.jsonl
+rag_legal_dataset.json
+enrich_checkpoint.json
+enrich_laws.log
+backend/czech_laws_checkpoint.json
+backend/test_qdrant.py
+test_qdrant.py
+build_rag_dataset.py
+enrich_laws.py
