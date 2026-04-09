@@ -62,6 +62,15 @@ class CzechLawEvidenceValidator:
                 reason="all_candidates_rejected",
             )
 
+        # Exact paragraph lookup: if we found the requested paragraph, return it as-is.
+        # Never broaden based on count — 1 exact hit for §89 is the correct answer.
+        if plan.mode == "exact" and validated:
+            return ValidationResult(
+                evidence_pack=EvidencePack(items=validated, understanding=understanding, plan=plan),
+                should_broaden=False,
+                reason="validated",
+            )
+
         if len(validated) < min_required and plan.allow_fallback_broadening and plan.mode != "broad":
             return ValidationResult(
                 evidence_pack=EvidencePack(items=validated, understanding=understanding, plan=plan),

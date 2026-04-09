@@ -57,7 +57,8 @@ def search_documents(
         results = retrieval_service.search(request)
     results = filter_by_score(results, min_score=0.9)
     results = rerank(request.query, results)
-    results = [result for result in results if result.score > 0]
+    _sys = {"irrelevant_query", "no_result", "clarification"}
+    results = [r for r in results if r.score > 0 or bool(set(getattr(r, "tags", []) or []) & _sys)]
     return SearchResponse(results=results)
 
 

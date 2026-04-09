@@ -105,14 +105,43 @@ class CzechLawRetrievalService:
             query_text=parsed["normalized_query"],
             is_exact=(plan.mode == "exact"),
         )
+
+        # ── confidence gate ───────────────────────────────────────────────────
+        # Fire when the query has zero legal context signal:
+        #   - no law refs, no paragraphs (would have triggered exact/constrained mode)
+        #   - domain unknown (no Czech legal vocabulary matched)
+        #   - none of the query's meaningful tokens appear in ANY returned chunk text
+        # This catches pure nonsense, foreign-language, and off-topic queries
+        # without depending on a magic score threshold that breaks with data changes.
+        if (
+            plan.mode == "broad"
+            and understanding.detected_domain == "unknown"
+            and not understanding.detected_law_refs
+            and not understanding.detected_paragraphs
+            and items
+        ):
+            query_tokens = {
+                t for t in understanding.keywords
+                if len(t) >= 4 and t not in {"text", "data", "cast", "nebo", "jako"}
+            }
+            any_token_in_results = any(
+                any(token in (item.text or "").lower() for token in query_tokens)
+                for item in items
+            )
+            if query_tokens and not any_token_in_results:
+                return [self._irrelevant_query_response()]
+
+        # ── relevance filter ──────────────────────────────────────────────────
         query_text = parsed["normalized_query"]
 
         def is_relevant(item: EvidencePackItem) -> bool:
             if plan.mode == "exact":
                 return True
+            if understanding.detected_domain != "unknown":
+                return True
             text = (item.text or "").lower()
-            query_words = query_text.split()
-            return any(word in text for word in query_words if len(word) > 3)
+            meaningful = [w for w in query_text.split() if len(w) > 3]
+            return any(w in text for w in meaningful)
 
         if not items or not any(is_relevant(item) for item in items):
             return [
@@ -140,6 +169,28 @@ class CzechLawRetrievalService:
             len(items),
         )
         return [self._to_result(item) for item in items]
+
+    def _irrelevant_query_response(self) -> SearchResultItem:
+        return SearchResultItem(
+            chunk_id="irrelevant_query",
+            document_id="",
+            filename="Dotaz nesouvisí s právem",
+            country=CountryEnum.CZECHIA,
+            domain=DomainEnum.LAW,
+            jurisdiction_module="czechia",
+            text=(
+                "Váš dotaz neobsahuje žádné právní pojmy. "
+                "Zkuste dotaz přeformulovat — uveďte název zákona, číslo paragrafu "
+                "nebo konkrétní právní situaci (např. 'výpověď zákoník práce', '§ 52', "
+                "'pracovní smlouva náležitosti')."
+            ),
+            chunk_index=0,
+            source_type="system",
+            source=None,
+            case_id=None,
+            tags=["irrelevant_query"],
+            score=0.0,
+        )
 
     def _apply_keyword_boost(
         self,
