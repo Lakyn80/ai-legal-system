@@ -98,8 +98,9 @@ _DOMAIN_SIGNAL_STEMS: dict[DetectedDomain, dict[str, float]] = {
         "zamestnav": 3.0,  # zaměstnavatel/zaměstnavatele — 100% employment specific
         "vypoved": 3.5,
         "odstupn": 2.5,
-        "dovolen": 2.0,
+        "dovolen": 3.0,    # dovolená/dovolené — employment specific (raised from 2.0)
         "mzda": 2.0,
+        "zkusebn": 2.5,    # zkušební doba — probationary period in employment context
     },
     "civil": {
         "smlouv": 2.5,
@@ -108,12 +109,14 @@ _DOMAIN_SIGNAL_STEMS: dict[DetectedDomain, dict[str, float]] = {
         "dedic": 2.0,
         "manzel": 2.0,
         "obcansk": 2.0,
+        "zavaz": 3.0,      # závazek/závazky/závazná — obligation, clearly civil law
     },
     "criminal": {
         "trestn": 3.0,
         "obvin": 2.5,
         "obzal": 2.5,
         "delikt": 2.0,
+        "zkusebn": 1.0,    # zkušební doba can also appear in criminal (conditional sentence), lower weight
     },
     "tax": {
         "dan": 2.0,

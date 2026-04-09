@@ -17,7 +17,7 @@ from app.modules.czechia.retrieval.reranker import CzechLawReranker
 from app.modules.czechia.retrieval.retrieval_planner import CzechLawRetrievalPlanner
 from app.modules.czechia.retrieval.schemas import CandidateBatch, EvidencePack, EvidencePackItem, QueryUnderstanding, RetrievalPlan
 from app.modules.czechia.retrieval.sparse_retriever import CzechLawSparseRetriever
-from app.modules.czechia.retrieval.text_utils import parse_law_iri, pick_primary_paragraph
+from app.modules.czechia.retrieval.text_utils import overlap_ratio, parse_law_iri, pick_primary_paragraph
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +52,11 @@ class CzechLawRetrievalService:
         )
         is_paragraph_only = parsed["paragraph"] is not None and not parsed["law_id"]
 
-        if is_paragraph_only and not has_keywords:
+        # Run full analysis first so we can check for law refs detected by the analyzer
+        # (e.g. "zákon o daních z příjmů" not in simple parser's alias map)
+        understanding = self._analyzer.analyze(parsed["normalized_query"])
+
+        if is_paragraph_only and not has_keywords and not understanding.detected_law_refs:
             ambiguity = self._ambiguity_handler.evaluate(
                 query=parsed["normalized_query"],
                 paragraph=parsed["paragraph"],
@@ -68,8 +72,6 @@ class CzechLawRetrievalService:
                     request.document_ids[0] if request.document_ids else None,
                 )
                 return self._build_ambiguity_results(ambiguity, request.top_k)
-
-        understanding = self._analyzer.analyze(parsed["normalized_query"])
         plan = self._planner.build(
             understanding=understanding,
             top_k=request.top_k,
@@ -120,16 +122,21 @@ class CzechLawRetrievalService:
             and not understanding.detected_paragraphs
             and items
         ):
-            query_tokens = {
+            query_tokens_list = [
                 t for t in understanding.keywords
                 if len(t) >= 4 and t not in {"text", "data", "cast", "nebo", "jako"}
-            }
-            any_token_in_results = any(
-                any(token in (item.text or "").lower() for token in query_tokens)
-                for item in items
-            )
-            if query_tokens and not any_token_in_results:
-                return [self._irrelevant_query_response()]
+            ]
+            if query_tokens_list:
+                # Use token overlap ratio against normalized text (strips diacritics).
+                # A real legal query will have many of its tokens appear in the results;
+                # an off-topic query (e.g. "počasí Praha zítra") may accidentally match
+                # one proper noun but won't reach 50% overlap.
+                max_overlap = max(
+                    overlap_ratio(query_tokens_list, item.text or "")
+                    for item in items
+                )
+                if max_overlap < 0.5:
+                    return [self._irrelevant_query_response()]
 
         # ── relevance filter ──────────────────────────────────────────────────
         query_text = parsed["normalized_query"]
