@@ -5,6 +5,7 @@ from app.core.dependencies import (
     get_app_settings,
     get_cache_admin_service,
     get_cache_metrics_service,
+    get_czech_search_answer_service,
     get_qdrant_vector_store,
     get_redis_cache_client,
     get_search_answer_service,
@@ -193,7 +194,9 @@ def test_admin_cache_metrics_reset_route_resets_counters():
 def test_search_answer_route_returns_structured_answer():
     startup_handlers = list(app.router.on_startup)
     app.router.on_startup.clear()
-    app.dependency_overrides[get_search_answer_service] = lambda: FakeSearchAnswerService()
+    fake = FakeSearchAnswerService()
+    app.dependency_overrides[get_search_answer_service] = lambda: fake
+    app.dependency_overrides[get_czech_search_answer_service] = lambda: fake
 
     try:
         with TestClient(app) as client:
