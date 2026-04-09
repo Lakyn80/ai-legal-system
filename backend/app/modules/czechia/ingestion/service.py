@@ -115,7 +115,7 @@ class CzechLawIngestionService:
 
         # ── 2. ensure collection ──────────────────────────────────────────
         if self._verbose:
-            print("[2/3] Ensuring Qdrant collection 'czech_laws'...")
+            print("[2/3] Ensuring Qdrant collection 'czech_laws_v2'...")
         self._writer.ensure_collection(dimension=self._embedder.dimension)
 
         # ── 3. stream → skip → filter → chunk → embed → upsert ───────────

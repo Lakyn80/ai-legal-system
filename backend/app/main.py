@@ -5,6 +5,8 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.dependencies import get_embedding_service, get_qdrant_vector_store
 from app.core.logging import configure_logging
+from app.modules.common.qdrant.utils import wait_for_qdrant_ready
+from app.modules.common.relevance.reranker import warmup_reranker
 
 
 settings = get_settings()
@@ -26,11 +28,17 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
 def validate_embedding_runtime() -> None:
     embedding_service = get_embedding_service()
     vector_store = get_qdrant_vector_store()
     vector_store.ensure_active_collection(embedding_service.profile)
+
+
+@app.on_event("startup")
+async def startup_validate_embedding_runtime() -> None:
+    await wait_for_qdrant_ready()
+    validate_embedding_runtime()
+    warmup_reranker()
 
 
 app.include_router(api_router, prefix=settings.api_prefix)

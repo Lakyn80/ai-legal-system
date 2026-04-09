@@ -3,7 +3,7 @@ Ingest locally downloaded e-Sbírka ZIP packages into Qdrant.
 
 Scans ``esbirka_data/`` for all ``*.zip`` files, converts each to
 CzechLawChunk via the existing pipeline (load_local_sb_zip → build_chunks),
-embeds in batches, and upserts to the ``czech_laws`` Qdrant collection.
+embeds in batches, and upserts to the ``czech_laws_v2`` Qdrant collection.
 
 Skip logic:
   Before opening a ZIP, the law_iri is derived from its filename
@@ -113,7 +113,7 @@ def run() -> None:
 
     qdrant_writer.ensure_collection(dimension=embedder.dimension)
     log.info(
-        "Qdrant collection 'czech_laws' ready  |  embedding: %s/%s  dim=%d",
+        "Qdrant collection 'czech_laws_v2' ready  |  embedding: %s/%s  dim=%d",
         settings.embedding_provider, settings.embedding_model, embedder.dimension,
     )
 

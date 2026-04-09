@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from app.modules.common.reasoning.confidence import ConfidenceGate
     from app.modules.common.responses.builders import SearchResponseBuilder
     from app.modules.common.storage.file_storage import FileStorageService
+    from app.modules.czechia.retrieval.service import CzechLawRetrievalService
     from app.modules.registry import JurisdictionRegistry
 
 
@@ -247,6 +248,43 @@ def get_search_answer_service() -> SearchAnswerService:
     return SearchAnswerService(
         query_processing_service=get_query_processing_service(),
         retrieval_service=get_retrieval_service(),
+        confidence_gate=get_confidence_gate(),
+        response_builder=get_search_response_builder(),
+        llm_provider=get_llm_provider(),
+        strategy_engine=get_strategy_engine(),
+        llm_model_name=settings.llm_model,
+        exact_cache_service=get_exact_cache_service(),
+        semantic_cache_service=get_semantic_cache_service(),
+        metrics_service=get_cache_metrics_service(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_czech_law_retrieval_service() -> CzechLawRetrievalService:
+    from app.modules.czechia.retrieval.dense_retriever import CzechLawDenseRetriever
+    from app.modules.czechia.retrieval.service import CzechLawRetrievalService
+
+    settings = get_settings()
+    dense_retriever = CzechLawDenseRetriever(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
+    )
+    return CzechLawRetrievalService(
+        embedding_service=get_embedding_service(),
+        dense_retriever=dense_retriever,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_czech_search_answer_service() -> SearchAnswerService:
+    from app.modules.czechia.retrieval.adapter import CzechLawRetrievalAdapter
+    from app.modules.common.orchestration.search_pipeline import SearchAnswerService
+
+    settings = get_settings()
+    adapter = CzechLawRetrievalAdapter(get_czech_law_retrieval_service())
+    return SearchAnswerService(
+        query_processing_service=get_query_processing_service(),
+        retrieval_service=adapter,
         confidence_gate=get_confidence_gate(),
         response_builder=get_search_response_builder(),
         llm_provider=get_llm_provider(),

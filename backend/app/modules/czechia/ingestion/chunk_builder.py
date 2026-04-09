@@ -57,6 +57,7 @@ def build_chunks(
     fragment_id: str = fragment.get("id", "")
     law_iri: str = fragment.get("law_iri", "")
     text: str = (fragment.get("text") or "").strip()
+    paragraph: str | None = fragment.get("paragraph")
 
     if not text:
         return []
@@ -72,6 +73,7 @@ def build_chunks(
                 law_iri=law_iri,
                 text=text,
                 chunk_index=0,
+                paragraph=paragraph,
                 definition_refs=definition_refs,
             )
         ]
@@ -91,6 +93,7 @@ def build_chunks(
             law_iri=law_iri,
             text=part,
             chunk_index=i,
+            paragraph=paragraph,
             definition_refs=definition_refs,
         )
         for i, part in enumerate(parts)

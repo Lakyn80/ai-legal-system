@@ -17,6 +17,7 @@ class CzechLawChunk(BaseModel):
     law_iri: str        # právní-akt-fragment IRI
     text: str           # text content used for embedding
     chunk_index: int    # position within the parent fragment (0-based)
+    paragraph: str | None = None
     source_type: str = "law_fragment"
 
     # ── Phase 1 relation hooks (populated where derivable) ─────────────────
@@ -43,7 +44,15 @@ class CzechLawChunk(BaseModel):
 
 
 class EmbeddedLawChunk(BaseModel):
-    """A CzechLawChunk paired with its embedding vector, ready for Qdrant upsert."""
+    """
+    A CzechLawChunk paired with its dense embedding vector and optional BM25
+    sparse vector, ready for Qdrant upsert into czech_laws_v2.
+
+    sparse_indices / sparse_values are empty lists when no IDFTable is available
+    (e.g. during development with hash provider).  The writer handles both cases.
+    """
 
     chunk: CzechLawChunk
     vector: list[float]
+    sparse_indices: list[int] = Field(default_factory=list)
+    sparse_values: list[float] = Field(default_factory=list)
