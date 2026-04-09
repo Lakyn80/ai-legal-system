@@ -94,8 +94,8 @@ _DOMAIN_SIGNAL_STEMS: dict[DetectedDomain, dict[str, float]] = {
     "employment": {
         "prac": 2.5,       # práci, práce, pracovat, pracovní — shorter stem covers inflections
         "pomer": 2.0,
-        "zamestnan": 2.0,
-        "zamestnav": 2.0,
+        "zamestnan": 3.0,  # zaměstnanec/zaměstnanci — 100% employment specific
+        "zamestnav": 3.0,  # zaměstnavatel/zaměstnavatele — 100% employment specific
         "vypoved": 3.5,
         "odstupn": 2.5,
         "dovolen": 2.0,

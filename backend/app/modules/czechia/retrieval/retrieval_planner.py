@@ -79,13 +79,18 @@ class CzechLawRetrievalPlanner:
             return self._apply_forced_signals(plan, forced_paragraph=forced_paragraph, forced_law=forced_law)
 
         if understanding.query_mode == "domain_search":
+            # High-confidence domain: hard-filter to preferred laws so unrelated laws
+            # with accidental BM25 matches (heading chunks) don't win.
+            # Broadening fallback in evidence_validator will relax this if needed.
+            high_confidence = understanding.domain_confidence >= 0.9
+            domain_law_filter = list(preferred_law_iris) if high_confidence else []
             plan = RetrievalPlan(
-                law_filter=[],
+                law_filter=domain_law_filter,
                 paragraph_filter=list(understanding.detected_paragraphs),
                 preferred_law_iris=list(preferred_law_iris),
                 candidate_k=_candidate_k(top_k, 90),
                 boost_factors=RetrievalBoostFactors(
-                    law_match_boost=0.0,
+                    law_match_boost=0.32 if high_confidence else 0.0,
                     paragraph_match_boost=0.24,
                     preferred_law_boost=0.24,
                     exact_match_boost=0.30,
