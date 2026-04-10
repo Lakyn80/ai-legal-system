@@ -25,8 +25,11 @@ class BaseLLMProvider(ABC):
 
 
 class OpenAIProvider(BaseLLMProvider):
-    def __init__(self, model_name: str, api_key: str) -> None:
-        self._client = ChatOpenAI(model=model_name, api_key=api_key, temperature=0)
+    def __init__(self, model_name: str, api_key: str, base_url: str | None = None) -> None:
+        kwargs: dict = dict(model=model_name, api_key=api_key, temperature=0)
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = ChatOpenAI(**kwargs)
 
     def invoke_structured(self, system_prompt: str, user_prompt: str, schema: type[T]) -> T:
         structured = self._client.with_structured_output(schema)
@@ -45,6 +48,15 @@ class OpenAIProvider(BaseLLMProvider):
             ]
         )
         return str(response.content)
+
+
+class DeepSeekProvider(OpenAIProvider):
+    """DeepSeek Chat — OpenAI-compatible API, no extra packages needed."""
+
+    _BASE_URL = "https://api.deepseek.com/v1"
+
+    def __init__(self, model_name: str, api_key: str) -> None:
+        super().__init__(model_name=model_name, api_key=api_key, base_url=self._BASE_URL)
 
 
 class MockLLMProvider(BaseLLMProvider):
@@ -125,6 +137,9 @@ class MockLLMProvider(BaseLLMProvider):
 
 
 def build_llm_provider(settings: Settings) -> BaseLLMProvider:
-    if settings.llm_provider.lower() == "openai" and settings.llm_api_key:
+    provider = settings.llm_provider.lower()
+    if provider == "deepseek" and settings.llm_api_key:
+        return DeepSeekProvider(model_name=settings.llm_model, api_key=settings.llm_api_key)
+    if provider == "openai" and settings.llm_api_key:
         return OpenAIProvider(model_name=settings.llm_model, api_key=settings.llm_api_key)
     return MockLLMProvider()

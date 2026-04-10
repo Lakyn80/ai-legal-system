@@ -169,6 +169,7 @@ class CzechLawRetrievalService:
                 )
             ]
 
+        items = self._dedup_by_text(items)
         log.info(
             "czech law retrieval complete: mode=%s domain=%s results=%d",
             validation.evidence_pack.plan.mode if validation.evidence_pack.plan else plan.mode,
@@ -176,6 +177,20 @@ class CzechLawRetrievalService:
             len(items),
         )
         return [self._to_result(item) for item in items]
+
+    @staticmethod
+    def _dedup_by_text(items: list[EvidencePackItem]) -> list[EvidencePackItem]:
+        """Remove items whose text is identical to a higher-scored item already kept."""
+        seen: set[str] = set()
+        result: list[EvidencePackItem] = []
+        for item in items:
+            key = (item.text or "").strip()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            result.append(item)
+        return result
 
     def _irrelevant_query_response(self) -> SearchResultItem:
         return SearchResultItem(
