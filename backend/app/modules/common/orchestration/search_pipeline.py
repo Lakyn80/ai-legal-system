@@ -11,6 +11,7 @@ from app.modules.common.observability.logging import log_event
 from app.modules.common.prompts.search_answers import (
     SEARCH_EXPLANATION_SYSTEM_PROMPT,
     build_search_explanation_prompt,
+    is_substantive,
 )
 from app.modules.common.qdrant.retrieval_service import RetrievalService
 from app.modules.common.qdrant.schemas import HybridSearchResponse, SearchRequest
@@ -181,6 +182,18 @@ class SearchAnswerService:
         )
 
     def _build_llm_semantic_response(self, query_context, retrieval, decision):
+        # Fail-safe: if none of the top 3 results contain substantive text
+        # (e.g. all headings or index lines), fall back to deterministic to
+        # avoid the LLM hallucinating from structural-only context.
+        top_results = retrieval.results[:3]
+        has_substantive = any(is_substantive(r.text or "") for r in top_results)
+        if not has_substantive:
+            logger.info(
+                "search.pipeline.llm_fallback_no_substantive_chunks query_hash=%s",
+                query_context.query_hash,
+            )
+            return self._build_deterministic_semantic_response(query_context, retrieval, decision)
+
         user_prompt = build_search_explanation_prompt(query_context, retrieval)
         llm_output = self.llm_provider.invoke_structured(
             SEARCH_EXPLANATION_SYSTEM_PROMPT,
