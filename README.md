@@ -1,638 +1,427 @@
 # AI Legal System
 
-Modular monorepo foundation for an AI legal system focused on court files, statutes, case law and litigation strategy across two isolated jurisdiction branches: `russia` and `czechia`.
+Modular monorepo for an AI legal system focused on Czech statutes, case law and litigation strategy. Core jurisdiction: `czechia`. Secondary (scaffold only): `russia`.
+
+---
 
 ## Current Checkpoint
 
-This section is the resume point after restart. It summarizes what is already implemented, what was verified live, what runtime state is currently in use, and what should happen next.
+This section is the authoritative resume point. It describes what is implemented, what is live-verified, what the current runtime state is, and what comes next.
+
+---
 
 ### Implemented So Far
 
-- Modular FastAPI backend and Next.js frontend foundation are in place.
+#### Foundation (earlier phase)
+
+- Modular FastAPI backend and Next.js frontend.
 - Qdrant lifecycle is production-safe:
   - active alias
   - versioned physical collections
   - embedding compatibility guard
   - explicit reindex flow
-- Embedding layer supports:
-  - `hash`
-  - `sentence_transformer`
-- Runtime fallback between embedding spaces is disabled to avoid mixed-vector retrieval.
-- New shared query pipeline was added:
-  - query normalization
-  - low-cost query classification
-  - domain hints
-  - confidence routing
-- Retrieval was upgraded from dense-only behavior to a modular hybrid path:
-  - dense retrieval
-  - lexical signals
-  - fused scoring
-  - retrieval feature bundle for downstream routing
-- New strict response layer was added for structured search answers.
-- `POST /api/search/answer` was added as the new retrieval-to-answer pipeline.
-- `POST /api/search` remains backward-compatible and still returns chunk results.
-- Redis exact cache was added as an optional optimization.
-- Redis Stack semantic cache was added as an optional optimization.
-- Exact cache runs first, semantic cache runs second, retrieval runs only when both miss.
-- Strategy requests still use the existing strategy engine and LangGraph path.
-- Cache observability was added:
-  - in-memory cache counters
-  - runtime cache status
-  - health output enrichment
-  - admin metrics endpoint
-- Structured JSON logging was added around:
-  - exact cache hits/misses/writes
-  - semantic cache hits/misses/writes
-  - search routing decisions
-- Cache admin operations were added:
-  - `POST /api/admin/cache/reset`
-  - `POST /api/admin/cache/metrics/reset`
-- Route-level API tests were added for:
-  - `GET /api/health`
-  - `GET /api/admin/cache/metrics`
-  - `POST /api/search/answer`
-  - cache reset admin endpoints
+- Embedding layer supports `hash` and `sentence_transformer`.
+- Runtime fallback between embedding spaces is disabled (no mixed-vector retrieval).
+- Shared query pipeline: normalization, classification, domain hints, confidence routing.
+- Hybrid retrieval: dense + lexical signals + fused scoring.
+- `POST /api/search/answer` — retrieval-to-answer pipeline.
+- `POST /api/search` — backward-compatible chunk retrieval.
+- Redis exact cache (optional).
+- Redis Stack semantic cache (optional).
+- Structured JSON logging, cache observability, admin endpoints.
 
-### Modules Added or Extended Recently
+#### Czech Law Hybrid Retrieval Pipeline (current phase)
 
-- Shared query layer:
-  - `backend/app/modules/common/querying/*`
-- Shared confidence / reasoning layer:
-  - `backend/app/modules/common/reasoning/*`
-- Shared response contracts:
-  - `backend/app/modules/common/responses/*`
-- Shared orchestration:
-  - `backend/app/modules/common/orchestration/search_pipeline.py`
-- Shared cache layer:
-  - `backend/app/modules/common/cache/client.py`
-  - `backend/app/modules/common/cache/exact_cache.py`
-  - `backend/app/modules/common/cache/identity.py`
-  - `backend/app/modules/common/cache/schemas.py`
-  - `backend/app/modules/common/cache/semantic_cache.py`
-- Shared observability:
-  - `backend/app/modules/common/observability/*`
-- Shared logging config:
-  - `backend/app/core/logging.py`
-- Shared cache admin control:
-  - `backend/app/modules/common/cache/admin_service.py`
-- Extended retrieval modules:
-  - `backend/app/modules/common/qdrant/retrieval_service.py`
-  - `backend/app/modules/common/qdrant/lexical_reranker.py`
-  - `backend/app/modules/common/qdrant/schemas.py`
-- Extended API / DI / config:
-  - `backend/app/api/routes/search.py`
-  - `backend/app/api/routes/health.py`
-  - `backend/app/api/routes/admin.py`
-  - `backend/app/core/dependencies.py`
-  - `backend/app/core/config.py`
+A fully custom retrieval stack was built for Czech statutes on top of Qdrant `czech_laws_v2`, a hybrid collection with named dense (`"dense"`) and sparse (`"sparse"`) vectors.
+
+**Collection**
+
+- `czech_laws_v2` — Qdrant hybrid collection, named vectors
+- Dense vector: `Alibaba-NLP/gte-multilingual-base` (384 dim)
+- Sparse vector: Czech BM25 (Robertson IDF + Robertson TF), IDF checkpoint at `storage/idf_czech_laws_v2.json`
+
+**Key modules**
+
+| File | Purpose |
+|------|---------|
+| `backend/app/modules/czechia/retrieval/query_analyzer.py` | Deterministic Czech query understanding: law ref detection, paragraph extraction, domain scoring (phrase + stem signals), query mode routing |
+| `backend/app/modules/czechia/retrieval/retrieval_planner.py` | Builds `RetrievalPlan` per query mode: `exact`, `constrained`, `domain`, `broad` — with per-mode boost factors and hard law filters |
+| `backend/app/modules/czechia/retrieval/dense_retriever.py` | Qdrant dense search on `czech_laws_v2` using `using="dense"` |
+| `backend/app/modules/czechia/retrieval/sparse_retriever.py` | Qdrant sparse search on `czech_laws_v2` using `models.SparseVector` + lazy BM25 IDF load |
+| `backend/app/modules/czechia/retrieval/fusion.py` | RRF fusion of dense + sparse candidates |
+| `backend/app/modules/czechia/retrieval/reranker.py` | Score-based reranker with law match, paragraph match, preferred law, exact match, structural neighbor and text overlap boosts |
+| `backend/app/modules/czechia/retrieval/evidence_validator.py` | Validates result set, triggers broadening if below threshold — does NOT broaden on exact mode with hits |
+| `backend/app/modules/czechia/retrieval/service.py` | Orchestrates the full pipeline: ambiguity check → analyze → plan → execute → validate → keyword boost → dedup → confidence gate → relevance filter |
+| `backend/app/modules/czechia/retrieval/ambiguity_handler.py` | Returns clarification suggestions for bare paragraph queries without a law name |
+| `backend/app/modules/czechia/retrieval/adapter.py` | Wraps `CzechLawRetrievalService` into the generic `RetrievalService` interface |
+| `backend/app/modules/czechia/ingestion/` | Full ingestion pipeline: fragment filter, chunk builder (deterministic uuid5 IDs), BM25 embedder, Qdrant writer, relation index, CLI |
+
+**Domain detection**
+
+Scores domains (`employment`, `civil`, `criminal`, `tax`, `administrative`, `constitutional`, `corporate`) using:
+- phrase signals (e.g. `"výpověď z pracovního poměru"` → 6.0)
+- stem signals (e.g. `"zamestnan"` → 3.0, `"dovolen"` → 3.0, `"zavaz"` → 3.0)
+- detected law refs (+5.0 per matched law)
+
+Threshold 2.5 — below this → `"unknown"`.
+
+**Query modes**
+
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| `exact_lookup` | law ref + paragraph detected | exact Qdrant payload filter, no broadening |
+| `law_constrained_search` | law ref only | dense+sparse within law filter |
+| `domain_search` | known domain, no ref | hard law filter when confidence ≥ 0.9 |
+| `broad_search` | no signal | unconstrained dense+sparse + confidence gate |
+
+**Confidence gate**
+
+Fires only on `broad_search` with `unknown` domain and no law/paragraph refs. Uses `overlap_ratio(query_tokens, result_text) ≥ 0.5` — returns `irrelevant_query` system response if no result reaches threshold.
+
+**Clarification flow**
+
+Bare paragraph queries like `§52` without a law name return a structured clarification response with suggestions for the top 3 laws. Bypassed if the full query analyzer detects a law ref (e.g. `§1 zákon o daních z příjmů`).
+
+**Dedup**
+
+- Query-time: `_dedup_by_text()` in retrieval service strips identical text before returning results.
+- Ingestion-time: `sha1(text)` per `law_iri` during streaming — same text in different fragments of the same law is stored only once.
+
+**Fixes applied this phase**
+
+- `"pracovn"` stem → `"prac"` (covers `práci`, `práce`, inflections)
+- `zamestnan`/`zamestnav` weights raised to 3.0 (cross threshold alone)
+- `dovolen` raised to 3.0, `zkusebn` added to employment
+- `zavaz` added to civil at 3.0
+- Evidence validator: early return for exact mode with hits (no spurious broadening)
+- `is_paragraph_only` check: run full analyzer first so law names like `zákon o daních z příjmů` bypass clarification
+- Confidence gate: token overlap ratio instead of any-token-in-text (blocks proper noun false positives)
+- High-confidence domain search: hard `law_filter = preferred_law_iris` when `domain_confidence ≥ 0.9`
+
+#### Batch Search Endpoint
+
+`POST /api/search/answer` now accepts both single and batch requests:
+
+```json
+// single (unchanged)
+{"query": "...", "country": "czechia", "domain": "law"}
+
+// batch
+{"queries": [{"query": "...", "country": "czechia", "domain": "law"}, ...]}
+```
+
+Batch runs queries concurrently via `ThreadPoolExecutor` (max 8 workers). Empty list returns `{"results": []}`.
+
+New models:
+- `BatchSearchRequest` — `queries: list[SearchRequest]`
+- `BatchSearchAnswerResponse` — `results: list[SearchAnswerResponse]`
+
+#### LLM Provider — DeepSeek
+
+`BaseLLMProvider` now has three implementations:
+
+| Class | `LLM_PROVIDER` value | Notes |
+|-------|---------------------|-------|
+| `MockLLMProvider` | `mock` | Default, no API key needed |
+| `OpenAIProvider` | `openai` | OpenAI API |
+| `DeepSeekProvider` | `deepseek` | OpenAI-compatible, `base_url=https://api.deepseek.com/v1`, no new packages |
+
+Active config (in root `.env`):
+```
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=<key>
+```
+
+---
 
 ### Live Verified State
 
-Live verification was completed against the currently running stack:
+Current ports:
 
-- Backend: `http://localhost:8030`
-- Frontend: `http://localhost:3010`
-- Qdrant: `http://localhost:6335`
-- Redis Stack: `localhost:6381`
+| Service | Host port |
+|---------|-----------|
+| Backend API | `http://localhost:8032` |
+| Backend docs (Swagger) | `http://localhost:8032/docs` |
+| Frontend | `http://localhost:3010` |
+| Qdrant | `http://localhost:6337` |
+| Redis | `localhost:6382` |
 
-Verified live:
+Live-verified:
 
-- `GET /api/health`
-- `GET /api/admin/cache/metrics`
-- `POST /api/admin/cache/reset`
-- `POST /api/admin/cache/metrics/reset`
-- exact cache hit path
-- semantic cache hit path
-- retrieval fallback path
-- structured JSON logs from backend container
+- 60/60 queries in `backend/run_tests.py` pass — exact lookups, domain search, broad search, clarification, irrelevant/nonsense detection
+- DeepSeek `deepseek-chat` returns real Czech legal explanations (not mock)
+- Batch endpoint processes multiple queries in parallel correctly
+- Redis cache working: exact cache hit on repeat queries
+- `pytest backend/tests` — 48 passed
 
-Verified live scenario:
+Sample verified query results:
 
-1. Query: `§ 3080 občanský zákoník`
-2. Query: `občanský zákoník § 3080`
-3. Query: `§ 3080 občanský zákoník`
+| Query | Result |
+|-------|--------|
+| `§ 52 zákoník práce` | exact hit → 262/2006 Sb., score 3.0 |
+| `§ 209 trestní zákoník` | exact hit → 40/2009 Sb. |
+| `§ 2910 občanský zákoník` | exact hit → 89/2012 Sb. |
+| `výpovědní doba zákoník práce` | constrained → 262/2006 Sb. |
+| `jak se počítá dovolená` | domain search → 262/2006 Sb. |
+| `zkušební doba délka` | domain search → 262/2006 Sb. |
+| `§ 52` | clarification response |
+| `počasí Praha zítra` | irrelevant_query response |
+| `python programming tutorial` | irrelevant_query response |
 
-Observed result:
-
-- first request: retrieval path
-- second request: semantic cache hit
-- third request: exact cache hit
-
-Observed cache metrics after that sequence:
-
-- `exact_cache.hits = 1`
-- `exact_cache.misses = 2`
-- `exact_cache.writes = 1`
-- `semantic_cache.hits = 1`
-- `semantic_cache.misses = 1`
-- `semantic_cache.writes = 1`
-- `pipeline.requests_total = 3`
-- `pipeline.retrieval_executions = 1`
-- `pipeline.llm_executions = 0`
-- `pipeline.strategy_executions = 0`
-
-### Runtime Nuance
-
-Current live backend on `8030` is functionally correct, but it is important to note the exact runtime state:
-
-- the running backend was updated from the current codebase and verified live
-- however, the active backend container is not yet a fully fresh compose-rebuilt image after the latest Redis/cache additions
-- Redis itself is currently running and reachable on `6381`
-
-This means:
-
-- the code state is current
-- the verified behavior is current
-- runtime has now been rebuilt into a clean compose-managed state after restart
-- backend, frontend, Qdrant and Redis are currently running through compose again
-
-### Latest Test Status
-
-Verified recently:
-
-- `python -m compileall backend/app backend/tests`
-- `pytest backend/tests/test_cache_metrics.py backend/tests/test_api_routes.py backend/tests/test_search_answer_service.py`
-- `pytest backend/tests/test_api_routes.py backend/tests/test_search_answer_service.py backend/tests/test_exact_cache_service.py backend/tests/test_semantic_cache_service.py backend/tests/test_redis_cache_client.py`
-
-Latest known recent results:
-
-- full local backend suite: `48 passed`
-- targeted local/backend tests: `12 passed`
-- expanded cache + API subset: `16 passed`
-- earlier full backend suite result before restart: `42 passed`
+---
 
 ### Resume Plan After Restart
 
-When continuing work, start from these steps:
+```powershell
+# 1. Start stack
+docker compose up -d
 
-1. Confirm containers and ports:
-   - backend `8030`
-   - frontend `3010`
-   - Qdrant `6335`
-   - Redis `6381`
-2. Re-run smoke checks:
-   - `GET /api/health`
-   - `GET /api/admin/cache/metrics`
-   - `POST /api/admin/cache/reset`
-   - `POST /api/admin/cache/metrics/reset`
-   - one exact-cache / semantic-cache test query pair
-3. Continue with the next engineering phase below.
+# 2. Rebuild backend image after code changes
+docker compose up -d --build backend
+
+# 3. Clear Redis cache (required after code changes that affect responses)
+Invoke-RestMethod -Uri "http://localhost:8032/api/admin/cache/reset" -Method POST
+
+# 4. Run end-to-end retrieval tests
+docker exec ai-legal-backend python run_tests.py
+
+# 5. Run unit test suite
+docker exec ai-legal-backend pytest tests -q
+```
+
+After `docker compose up -d --build`, `run_tests.py` is not baked into the image — copy it first:
+```powershell
+docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
+```
+
+---
 
 ### Planned Next Steps
 
-These are the agreed next tasks after the current cache pipeline work:
+1. **Re-ingest with full BM25 sparse vectors** — run `FORCE_REINGEST=1` to rebuild `czech_laws_v2` with proper sparse vectors (currently ingested with hash provider, sparse vectors empty for most points). This will significantly improve keyword-based retrieval.
 
-1. Clean runtime consolidation
-   - completed after restart cleanup
-2. Observability hardening
-   - structured logging around cache hits/misses and routing decisions completed
-   - next optional step: Prometheus-style export or OpenTelemetry integration
-3. Cache operations
-   - cache clear/reset and metrics reset endpoints completed
-   - next optional step: scoped invalidation by jurisdiction/domain
-4. Semantic cache policy refinement
-   - different thresholds by query type
-   - optional stricter reuse rules for law vs courts
-5. Integration tests
-   - route-level tests for `/api/health`, `/api/admin/cache/metrics`, `/api/search/answer` completed
-   - next step: add end-to-end compose-backed API smoke into CI
-6. Strategy pipeline refinement
-   - reuse more of the shared query/retrieval primitives inside strategy orchestration
-   - keep jurisdiction isolation intact
+2. **Score summary fix** — `decision.score_summary` always shows zeros for Czech path (Czech retrieval bypasses the `RetrievalFeatureSet` pipeline). Needs a bridge in `CzechLawRetrievalAdapter`.
 
-### Operational Reminder
+3. **Heading chunks ranking above content** — section heading chunks (e.g. `"PRÁCE PŘESČAS"`) sometimes rank above substantive content. Fix: detect `source_type="heading"` and apply score penalty in reranker.
 
-The checkpoint goal is:
+4. **Prometheus / OpenTelemetry** — export cache and retrieval metrics in machine-readable format.
 
-- do not rewrite working ingestion/Qdrant/jurisdiction modules
-- continue incrementally from the new shared query/cache/retrieval/observability layers
-- preserve no-mixed-embedding-space guarantees
-- preserve active alias and versioned collection lifecycle
-- keep Redis optional and non-breaking
+5. **Scoped cache invalidation** — invalidate by `jurisdiction + domain` without clearing everything.
+
+6. **End-to-end CI test** — compose-backed smoke test in GitHub Actions hitting the live API.
+
+7. **Russia jurisdiction** — scaffold only, retrieval pipeline not built yet.
+
+---
+
+### Operational Constraints
+
+- Do not rewrite ingestion or Qdrant lifecycle modules.
+- Preserve no-mixed-embedding-space guarantee.
+- Preserve active alias and versioned collection lifecycle.
+- Keep Redis optional and non-blocking.
+- Czech retrieval is fully isolated — `CzechLawRetrievalService` / `CzechLawRetrievalAdapter` — does not affect the generic retrieval path.
+
+---
 
 ## Stack
 
-- Backend: FastAPI
-- Frontend: Next.js + React + Tailwind CSS
-- Vector database: Qdrant
-- Orchestration: LangChain + LangGraph
-- Configuration: `.env`
-- Runtime: Docker + docker-compose
-- Testing: pytest
-- CI: GitHub Actions
-- Cache: Redis / Redis Stack (optional exact + semantic cache)
+| Layer | Technology |
+|-------|-----------|
+| Backend | FastAPI + Uvicorn |
+| Frontend | Next.js + React + Tailwind CSS |
+| Vector DB | Qdrant 1.17 (hybrid named vectors) |
+| Orchestration | LangChain + LangGraph |
+| LLM | DeepSeek Chat (configurable: also OpenAI or mock) |
+| Embeddings | `Alibaba-NLP/gte-multilingual-base` via sentence-transformers |
+| Sparse | Czech BM25 (custom Robertson IDF/TF) |
+| Cache | Redis (exact) + Redis Stack (semantic, optional) |
+| Config | `.env` via pydantic-settings |
+| Runtime | Docker + docker-compose |
+| Testing | pytest |
+| CI | GitHub Actions |
+
+---
 
 ## Project Tree
 
 ```text
 .
-├── .dockerignore
+├── .env                         ← active config (not in git)
 ├── .env.example
-├── .github
-│   └── workflows
-│       └── ci.yml
-├── .gitignore
-├── README.md
 ├── docker-compose.yml
 ├── backend
-│   ├── .dockerignore
 │   ├── .env.example
 │   ├── Dockerfile
-│   ├── requirements-dev.txt
 │   ├── requirements.txt
+│   ├── run_tests.py             ← 60-query end-to-end retrieval test
+│   ├── storage/
+│   │   └── idf_czech_laws_v2.json  ← BM25 IDF checkpoint
 │   ├── app
-│   │   ├── __init__.py
-│   │   ├── main.py
-│   │   ├── api
-│   │   │   ├── __init__.py
-│   │   │   ├── router.py
-│   │   │   └── routes
-│   │   │       ├── __init__.py
-│   │   │       ├── admin.py
-│   │   │       ├── documents.py
-│   │   │       ├── health.py
-│   │   │       ├── jurisdictions.py
-│   │   │       ├── search.py
-│   │   │       └── strategy.py
-│   │   ├── cli
-│   │   │   ├── __init__.py
-│   │   │   └── import_local_document.py
-│   │   │   └── reindex_documents.py
-│   │   ├── core
-│   │   │   ├── __init__.py
-│   │   │   ├── config.py
-│   │   │   ├── dependencies.py
-│   │   │   ├── enums.py
-│   │   │   └── exceptions.py
-│   │   ├── db
-│   │   │   └── __init__.py
-│   │   └── modules
-│   │       ├── __init__.py
-│   │       ├── contracts.py
-│   │       ├── registry.py
-│   │       ├── common
-│   │       │   ├── __init__.py
-│   │       │   ├── auth
-│   │       │   │   └── __init__.py
-│   │       │   ├── chunking
-│   │       │   │   ├── __init__.py
-│   │       │   │   └── service.py
-│   │       │   ├── documents
-│   │       │   │   ├── __init__.py
-│   │       │   │   ├── ingestion_service.py
-│   │       │   │   ├── repository.py
-│   │       │   │   ├── schemas.py
-│   │       │   │   └── service.py
-│   │       │   ├── embeddings
-│   │       │   │   ├── __init__.py
-│   │       │   │   ├── base.py
-│   │       │   │   ├── hash_provider.py
-│   │       │   │   ├── profile.py
-│   │       │   │   ├── provider.py
-│   │       │   │   └── sentence_transformer_provider.py
-│   │       │   ├── graph
-│   │       │   │   ├── __init__.py
-│   │       │   │   ├── builder.py
-│   │       │   │   ├── schemas.py
-│   │       │   │   └── strategy_engine.py
-│   │       │   ├── llm
-│   │       │   │   ├── __init__.py
-│   │       │   │   └── provider.py
-│   │       │   ├── parsing
-│   │       │   │   ├── __init__.py
-│   │       │   │   ├── legal_collection.py
-│   │       │   │   ├── service.py
-│   │       │   │   └── xhtml.py
-│   │       │   ├── prompts
-│   │       │   │   ├── __init__.py
-│   │       │   │   └── base.py
-│   │       │   ├── qdrant
-│   │       │   │   ├── __init__.py
-│   │       │   │   ├── client.py
-│   │       │   │   ├── lexical_reranker.py
-│   │       │   │   ├── reindex_service.py
-│   │       │   │   ├── retrieval_service.py
-│   │       │   │   └── schemas.py
-│   │       │   └── storage
-│   │       │       ├── __init__.py
-│   │       │       └── file_storage.py
-│   │       ├── czechia
-│   │       │   ├── __init__.py
-│   │       │   ├── courts
-│   │       │   │   └── __init__.py
-│   │       │   ├── graph
-│   │       │   │   ├── __init__.py
-│   │       │   │   └── workflow.py
-│   │       │   ├── ingestion
-│   │       │   │   └── __init__.py
-│   │       │   ├── law
-│   │       │   │   └── __init__.py
-│   │       │   ├── prompts
-│   │       │   │   ├── __init__.py
-│   │       │   │   └── strategy_prompts.py
-│   │       │   ├── retrieval
-│   │       │   │   └── __init__.py
-│   │       │   ├── schemas
-│   │       │   │   ├── __init__.py
-│   │       │   │   └── profile.py
-│   │       │   ├── services
-│   │       │   │   ├── __init__.py
-│   │       │   │   └── strategy.py
-│   │       │   └── strategy
-│   │       │       └── __init__.py
-│   │       └── russia
-│   │           ├── __init__.py
-│   │           ├── courts
-│   │           │   └── __init__.py
-│   │           ├── graph
-│   │           │   ├── __init__.py
-│   │           │   └── workflow.py
-│   │           ├── ingestion
-│   │           │   └── __init__.py
-│   │           ├── law
-│   │           │   └── __init__.py
-│   │           ├── prompts
-│   │           │   ├── __init__.py
-│   │           │   └── strategy_prompts.py
-│   │           ├── retrieval
-│   │           │   └── __init__.py
-│   │           ├── schemas
-│   │           │   ├── __init__.py
-│   │           │   └── profile.py
-│   │           ├── services
-│   │           │   ├── __init__.py
-│   │           │   └── strategy.py
-│   │           └── strategy
-│   │               └── __init__.py
-│   └── tests
-│       ├── __init__.py
-│       ├── conftest.py
-│       ├── test_chunking.py
-│       ├── test_document_service.py
-│       ├── test_embedding_provider.py
-│       ├── test_ingestion_service.py
-│       ├── test_legal_collection_parser.py
-│       ├── test_qdrant_vector_store.py
-│       ├── test_reindex_service.py
-│       └── test_retrieval_service.py
-└── frontend
-    ├── .dockerignore
-    ├── .env.example
-    ├── Dockerfile
-    ├── next-env.d.ts
-    ├── next.config.js
-    ├── package-lock.json
-    ├── package.json
-    ├── postcss.config.js
-    ├── tailwind.config.js
-    ├── tsconfig.json
-    ├── app
-    │   ├── documents
-    │   │   └── page.tsx
-    │   ├── search
-    │   │   └── page.tsx
-    │   ├── strategy
-    │   │   └── page.tsx
-    │   ├── upload
-    │   │   └── page.tsx
-    │   ├── globals.css
-    │   ├── layout.tsx
-    │   └── page.tsx
-    ├── components
-    │   ├── chunk-results.tsx
-    │   ├── navigation.tsx
-    │   ├── page-header.tsx
-    │   ├── section-card.tsx
-    │   └── strategy-view.tsx
-    ├── features
-    │   ├── documents
-    │   │   └── documents-list.tsx
-    │   ├── jurisdiction
-    │   │   └── jurisdiction-selector.tsx
-    │   ├── search
-    │   │   └── search-panel.tsx
-    │   ├── strategy
-    │   │   └── strategy-panel.tsx
-    │   └── upload
-    │       └── upload-form.tsx
-    ├── lib
-    │   ├── config.ts
-    │   └── utils.ts
-    ├── public
-    │   └── .gitkeep
-    ├── services
-    │   └── backend-api.ts
-    └── types
-        └── index.ts
+│   │   ├── api/routes/
+│   │   │   ├── search.py        ← single + batch search/answer endpoints
+│   │   │   ├── health.py
+│   │   │   └── admin.py
+│   │   ├── core/
+│   │   │   ├── config.py        ← Settings (LLM_PROVIDER, LLM_MODEL, LLM_API_KEY, ...)
+│   │   │   └── dependencies.py  ← DI wiring
+│   │   └── modules/
+│   │       ├── common/
+│   │       │   ├── llm/provider.py          ← MockLLMProvider, OpenAIProvider, DeepSeekProvider
+│   │       │   ├── orchestration/search_pipeline.py
+│   │       │   ├── querying/                ← query normalization + classification
+│   │       │   ├── reasoning/               ← confidence gate
+│   │       │   ├── responses/               ← SearchAnswerResponse, BatchSearchAnswerResponse
+│   │       │   ├── cache/                   ← exact + semantic Redis cache
+│   │       │   ├── observability/           ← metrics, logging
+│   │       │   ├── relevance/               ← filter.py (score + system tag passthrough)
+│   │       │   └── qdrant/                  ← generic retrieval service
+│   │       └── czechia/
+│   │           ├── retrieval/
+│   │           │   ├── query_analyzer.py    ← law ref + domain + paragraph detection
+│   │           │   ├── retrieval_planner.py ← RetrievalPlan per query mode
+│   │           │   ├── dense_retriever.py   ← czech_laws_v2, using="dense"
+│   │           │   ├── sparse_retriever.py  ← czech_laws_v2, BM25 SparseVector
+│   │           │   ├── fusion.py            ← RRF
+│   │           │   ├── reranker.py          ← multi-factor score reranker
+│   │           │   ├── evidence_validator.py
+│   │           │   ├── service.py           ← pipeline orchestrator
+│   │           │   ├── ambiguity_handler.py ← clarification for bare §N queries
+│   │           │   ├── adapter.py           ← bridges to generic RetrievalService
+│   │           │   └── schemas.py
+│   │           └── ingestion/
+│   │               ├── service.py           ← streaming ingest + sha1 dedup
+│   │               ├── chunk_builder.py     ← deterministic uuid5 chunk IDs
+│   │               ├── embedder.py
+│   │               ├── sparse_retriever.py  ← BM25 encoder
+│   │               ├── fragment_filter.py
+│   │               ├── loader.py
+│   │               ├── qdrant_writer.py     ← upsert to czech_laws_v2
+│   │               ├── relation_index.py
+│   │               └── schemas.py
+│   └── tests/                   ← 48 pytest tests
+└── frontend/
+    └── ...                      ← Next.js UI
 ```
 
-## Architecture Summary
+---
 
-- `backend/app/modules/common`: shared parsing, chunking, embeddings, Qdrant, LLM and strategy orchestration.
-- `backend/app/modules/russia` and `backend/app/modules/czechia`: isolated jurisdiction branches with separate prompts, schema profiles and graph workflow entrypoints.
-- `backend/app/modules/contracts.py` and `backend/app/modules/registry.py`: plug-in style jurisdiction descriptors and routing.
-- `backend/app/modules/common/embeddings`: provider-based embedding layer with swappable providers.
-- `backend/app/modules/common/parsing/legal_collection.py`: legal collection parser for structured Czech statute exports in `JSON` or `ZIP`.
-- `backend/app/modules/common/qdrant/client.py`: active-alias lifecycle, embedding metadata guard and versioned physical collections.
-- `backend/app/modules/common/qdrant/reindex_service.py`: safe reindex into a new collection version followed by alias switch.
-- `backend/app/modules/common/qdrant/lexical_reranker.py`: retrieval post-processing layer that improves ordering of candidate chunks.
-- `frontend/features/*`: UI logic separated by functional area.
-- `frontend/services/backend-api.ts`: isolated API client.
+## API Reference
 
-## Backend Features
+### Search
 
-- `POST /api/documents/upload`
-- `POST /api/documents/ingest`
-- `GET /api/documents`
-- `POST /api/admin/reindex`
-- `GET /api/admin/cache/metrics`
-- `POST /api/search`
-- `POST /api/search/answer`
-- `POST /api/strategy/generate`
-- `GET /api/health`
-- `GET /api/jurisdictions`
+```
+POST /api/search
+```
+Returns ranked chunks. Backward-compatible.
 
-### Upload and Ingestion
+```
+POST /api/search/answer
+```
+Single query → `SearchAnswerResponse`
+Batch query → `BatchSearchAnswerResponse`
 
-- Supports `PDF`, `DOCX`, `TXT`, `JSON`, `ZIP`
-- Stores metadata locally in `STORAGE_PATH`
-- Parses text, chunks with overlap, builds embeddings and upserts to Qdrant
-- Supports local archive import through the CLI for large legal collections
-- Uses a stable active alias in Qdrant and stores embedding metadata on the physical collection
-- Qdrant payload contains:
-  - `chunk_id`
-  - `document_id`
-  - `filename`
-  - `country`
-  - `domain`
-  - `jurisdiction_module`
-  - `text`
-  - `chunk_index`
-  - `source_type`
-  - `tags`
+Single input:
+```json
+{"query": "§ 52 zákoník práce", "country": "czechia", "domain": "law", "top_k": 5}
+```
 
-### Embedding Providers
+Batch input:
+```json
+{
+  "queries": [
+    {"query": "§ 52 zákoník práce", "country": "czechia", "domain": "law"},
+    {"query": "výpovědní doba", "country": "czechia", "domain": "law"}
+  ]
+}
+```
 
-- `hash`: offline-safe deterministic provider for local bootstrap and CI
-- `sentence_transformer`: semantic provider for higher-quality retrieval when model download or local cache is available
-- provider aliases `sentence_transformer` and `sentence_transformers` are both accepted in config
-- runtime fallback between embedding spaces is intentionally disabled to avoid mixed-vector retrieval
+### Admin
 
-### Strategy Engine
+```
+GET  /api/health
+GET  /api/admin/cache/metrics
+POST /api/admin/cache/reset
+POST /api/admin/cache/metrics/reset
+```
 
-LangGraph workflow runs these steps:
-
-1. Intake query
-2. Determine jurisdiction
-3. Retrieve relevant law chunks
-4. Retrieve relevant court chunks
-5. Analyze legal norms
-6. Analyze court positions
-7. Synthesize arguments
-8. Assess risks and missing materials
-9. Return structured JSON strategy
-
-If no real provider is configured, the system falls back to a `mock` LLM provider so the project remains runnable as a functional base. For production use, switch `LLM_PROVIDER=openai` and provide `LLM_API_KEY`.
-
-### Search Answer Pipeline
-
-- `POST /api/search` keeps the original retrieval-only behavior and returns ranked chunks
-- `POST /api/search/answer` runs the new query pipeline:
-  - query normalization and classification
-  - optional exact cache short-circuit in Redis
-  - optional semantic cache short-circuit in Redis Stack / RediSearch
-  - hybrid retrieval with lexical signals
-  - confidence gate
-  - deterministic citation answer for high-confidence exact matches
-  - LLM-grounded semantic explanation only when needed
+---
 
 ## Environment Setup
 
-1. Copy root env:
+Copy root env and fill in secrets:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-2. Optional:
+Key variables:
 
-- copy `backend/.env.example` to `backend/.env` for local backend-only runs
-- copy `frontend/.env.example` to `frontend/.env.local` for local frontend-only runs
+```env
+# Ports
+BACKEND_PORT=8032
+FRONTEND_PORT=3010
+QDRANT_HOST_PORT=6337
+REDIS_HOST_PORT=6382
 
-Important env variables:
+# LLM — set to deepseek for production
+LLM_PROVIDER=deepseek          # deepseek | openai | mock
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=sk-...
 
-- `BACKEND_PORT=8030`
-- `FRONTEND_PORT=3010`
-- `QDRANT_HOST_PORT=6335`
-- `QDRANT_COLLECTION=legal_documents`
-- `QDRANT_COLLECTION_ALIAS=legal_documents_active`
-- `REDIS_ENABLED=false`
-- `REDIS_URL=redis://redis:6379/0`
-- `EXACT_CACHE_ENABLED=false`
-- `EXACT_CACHE_TTL_SECONDS=3600`
-- `SEMANTIC_CACHE_ENABLED=false`
-- `SEMANTIC_CACHE_TTL_SECONDS=7200`
-- `SEMANTIC_CACHE_SIMILARITY_THRESHOLD=0.93`
-- `SEMANTIC_CACHE_TOP_K=3`
-- `RESPONSE_SCHEMA_VERSION=v1`
-- `STRATEGY_PROMPT_VERSION=v1`
-- `EMBEDDING_PROVIDER=hash`
-- `EMBEDDING_MODEL_NAME=Alibaba-NLP/gte-multilingual-base`
+# Cache (optional)
+REDIS_ENABLED=true
+EXACT_CACHE_ENABLED=true
+SEMANTIC_CACHE_ENABLED=true
+
+# Embeddings
+EMBEDDING_PROVIDER=hash        # hash | sentence_transformer
+EMBEDDING_MODEL_NAME=Alibaba-NLP/gte-multilingual-base
+```
+
+> `backend/.env` is NOT used — docker-compose reads root `.env` and passes variables directly into the backend container environment.
+
+---
 
 ## Run With Docker
 
-```bash
-docker compose up --build
+```powershell
+docker compose up -d --build
 ```
 
-Services:
-
-- Frontend: `http://localhost:3010`
-- Backend API: `http://localhost:8030`
-- Backend docs: `http://localhost:8030/docs`
-- Qdrant: `http://localhost:6335`
-- Redis: `localhost:6381`
-
-## Local Development
-
-### Backend
+After first build, for code-only changes:
 
 ```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt -r requirements-dev.txt
-uvicorn app.main:app --reload --port 8030
+docker compose up -d --build backend
+docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
+Invoke-RestMethod -Uri "http://localhost:8032/api/admin/cache/reset" -Method POST
+docker exec ai-legal-backend python run_tests.py
 ```
 
-### Frontend
+---
+
+## Tests
 
 ```powershell
-cd frontend
-npm install
-npm run dev
+# Unit tests (inside container)
+docker exec ai-legal-backend pytest tests -q
+
+# End-to-end retrieval tests (60 queries, requires running stack)
+docker exec ai-legal-backend python run_tests.py
+
+# CI (GitHub Actions)
+# installs deps, compiles, runs pytest backend/tests, builds frontend
 ```
 
-## Import Local Legal Collection
-
-Large legal archives can be kept outside git and imported through the backend CLI after extraction.
-
-Example:
-
-```powershell
-docker exec ai-legal-backend python -m app.cli.import_local_document `
-  /tmp/legal-imports/Sb_2012_89_2026-01-01_IZ.json `
-  --country czechia `
-  --domain law `
-  --document-type legal_collection_json `
-  --source "Sb_2012_89_2026-01-01_IZ" `
-  --tags sbirka,zakony,czechia
-```
-
-## Reindex Qdrant
-
-Reindex creates a new physical collection version, re-embeds all stored documents and atomically switches the active alias after success.
-
-API example:
-
-```powershell
-Invoke-RestMethod -Uri "http://localhost:8030/api/admin/reindex" `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body '{"delete_previous_collection": false}'
-```
-
-CLI example:
-
-```powershell
-docker compose run --rm backend python -m app.cli.reindex_documents
-```
-
-## Tests and CI
-
-Run backend tests:
-
-```powershell
-docker run --rm -v "${PWD}\backend:/workspace" -w /workspace ai-legal-system-backend sh -lc "pip install --no-cache-dir -r requirements-dev.txt && pytest tests"
-```
-
-GitHub Actions workflow:
-
-- installs CPU-only torch
-- installs backend and frontend dependencies
-- compiles backend modules
-- runs `pytest backend/tests`
-- runs `npm run build` for frontend
+---
 
 ## Notes
 
-- Backend validates embedding compatibility on startup and fails fast on mismatch.
-- Qdrant writes and reads go through an active alias, while physical collections are versioned.
-- Redis exact cache is optional and does not block startup or request handling when disabled or unavailable.
-- Semantic cache is also optional and only activates when Redis Stack / RediSearch features are available.
-- `GET /api/health` now includes cache runtime state and in-memory request/cache counters.
-- `GET /api/admin/cache/metrics` exposes detailed exact/semantic cache counters and runtime status for observability.
-- Storage is file-backed to keep the foundation simple and replaceable.
-- The archive `Sb_2012_89_2026-01-01_IZ.zip` and extracted workspace data are ignored by git and docker context.
-- Jurisdictions can be extended by adding a new module branch and registering a new descriptor.
-- For better legal retrieval quality in production, switch the embedding provider from `hash` to `sentence_transformer` and preload or cache the model.
+- Czech retrieval is isolated in `modules/czechia/retrieval/` — does not touch the generic retrieval path.
+- `czech_laws_v2` is a separate Qdrant collection from `legal_documents` — the two collections do not interact.
+- BM25 IDF checkpoint is lazy-loaded on first sparse retrieval call and cached for the process lifetime.
+- Redis cache must be cleared after backend code changes that affect response format (`POST /api/admin/cache/reset`).
+- `run_tests.py` is not baked into the Docker image — copy it with `docker cp` after `--build`.
+- DeepSeek uses the OpenAI-compatible API — no new packages required, `langchain-openai` handles it via `base_url`.
+- Qdrant writes use deterministic `uuid5(chunk_id)` point IDs — re-ingestion is idempotent.
