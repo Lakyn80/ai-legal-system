@@ -28,6 +28,7 @@ Progress reporting
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -65,6 +66,7 @@ class IngestionStats:
     fragments_seen: int = 0
     fragments_filtered: int = 0
     chunks_total: int = 0
+    chunks_deduped: int = 0
     chunks_upserted: int = 0
     batches: int = 0
     filter_reasons: dict[str, int] = field(default_factory=dict)
@@ -124,6 +126,9 @@ class CzechLawIngestionService:
 
         batch: list[CzechLawChunk] = []
         total_seen = 0  # total including skipped, for checkpoint alignment
+        # Per-law text dedup: law_iri → set of sha1(text) hashes.
+        # Identical text in different fragments of the same law is stored only once.
+        seen_text_hashes: dict[str, set[str]] = {}
 
         for fragment in stream_law_fragments(dataset_path):
             total_seen += 1
@@ -151,6 +156,22 @@ class CzechLawIngestionService:
                 chunk_size=self._chunk_size,
                 chunk_overlap=self._chunk_overlap,
             )
+
+            # ── dedup: drop chunks whose text already appeared in this law ──
+            law_iri: str = fragment.get("law_iri", "")
+            if law_iri not in seen_text_hashes:
+                seen_text_hashes[law_iri] = set()
+            law_hashes = seen_text_hashes[law_iri]
+            unique_chunks: list[CzechLawChunk] = []
+            for chunk in chunks:
+                h = hashlib.sha1(chunk.text.strip().encode(), usedforsecurity=False).hexdigest()
+                if h in law_hashes:
+                    stats.chunks_deduped += 1
+                    continue
+                law_hashes.add(h)
+                unique_chunks.append(chunk)
+            chunks = unique_chunks
+
             batch.extend(chunks)
             stats.chunks_total += len(chunks)
 
@@ -178,6 +199,7 @@ class CzechLawIngestionService:
         print(
             f"  fragments={stats.fragments_seen:>10,}  "
             f"filtered={stats.fragments_filtered:>8,}  "
+            f"deduped={stats.chunks_deduped:>8,}  "
             f"chunks={stats.chunks_upserted:>10,}  "
             f"batches={stats.batches:>6,}",
             flush=True,
