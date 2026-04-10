@@ -97,6 +97,29 @@ Bare paragraph queries like `§52` without a law name return a structured clarif
 - `is_paragraph_only` check: run full analyzer first so law names like `zákon o daních z příjmů` bypass clarification
 - Confidence gate: token overlap ratio instead of any-token-in-text (blocks proper noun false positives)
 - High-confidence domain search: hard `law_filter = preferred_law_iris` when `domain_confidence ≥ 0.9`
+- Removed `"narok"`/`"naroku"` from `_STRATEGY_KEYWORDS` — "nárok" is a basic Czech legal term, not a strategy indicator; queries like "zaměstnanec nárok na odstupné" now correctly route to law retrieval
+- Index-line structural penalty: numbered derogation-schedule entries (`"1. zákon č. ..."`, `"16. nařízení vlády č. ..."`) get −0.45 penalty in `CzechLawReranker` — runs unconditionally, covers all laws with preamble derogation lists
+
+#### Cross-Encoder Reranker
+
+A modular cross-encoder reranker stack was added as a common abstraction under `modules/common/reranker/`.
+
+**Architecture**
+
+| File | Purpose |
+|------|---------|
+| `backend/app/modules/common/reranker/provider.py` | `BaseRerankerProvider` ABC — `score(query, documents) → list[float]` |
+| `backend/app/modules/common/reranker/providers/bge.py` | `BGERerankerProvider` — `BAAI/bge-reranker-base` (~280 MB), lazy singleton, thread-safe, `_init_failed` guard |
+| `backend/app/modules/common/reranker/service.py` | `rerank()` — reorder results by cross-encoder score, fail-open, 300 ms timeout via `ThreadPoolExecutor`; `score_with_fallback()` — returns raw scores for domain-specific post-processing |
+| `backend/app/modules/czechia/retrieval/cross_encoder_reranker.py` | Czech-law shim: delegates to `common.reranker.service.score_with_fallback()`, applies Czech heading penalty (−0.35) and index-line penalty (−0.50) before final sort |
+
+**Design decisions**
+
+- Text truncated to 768 chars before scoring (keeps latency predictable on CPU)
+- Original `result.score` is NOT overwritten — cross-encoder only reorders
+- Timeout fail-open: if BGE model is still loading or exceeds 300 ms, original RRF order is preserved
+- BGE not applied on `exact` mode (paragraph lookup) — order there is structurally determined
+- Index-line penalty also lives in `CzechLawReranker` (runs unconditionally) so it fires even when BGE has not loaded yet
 
 #### Batch Search Endpoint
 
@@ -150,10 +173,13 @@ Current ports:
 Live-verified:
 
 - 60/60 queries in `backend/run_tests.py` pass — exact lookups, domain search, broad search, clarification, irrelevant/nonsense detection
+- 49/49 queries in `test_queries.ps1` pass — live HTTP test against `POST /api/search/answer`
 - DeepSeek `deepseek-chat` returns real Czech legal explanations (not mock)
 - Batch endpoint processes multiple queries in parallel correctly
 - Redis cache working: exact cache hit on repeat queries
 - `pytest backend/tests` — 48 passed
+- Strategy routing: "nárok" queries correctly go to law retrieval, not strategy engine
+- Index-line chunks no longer rank above substantive paragraphs
 
 Sample verified query results:
 
@@ -203,7 +229,7 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 
 2. **Score summary fix** — `decision.score_summary` always shows zeros for Czech path (Czech retrieval bypasses the `RetrievalFeatureSet` pipeline). Needs a bridge in `CzechLawRetrievalAdapter`.
 
-3. **Heading chunks ranking above content** — section heading chunks (e.g. `"PRÁCE PŘESČAS"`) sometimes rank above substantive content. Fix: detect `source_type="heading"` and apply score penalty in reranker.
+3. **BGE warm-up on startup** — the cross-encoder model is lazy-loaded on first call; first query after restart falls back to RRF order. A startup warm-up request would eliminate this cold-start penalty.
 
 4. **Prometheus / OpenTelemetry** — export cache and retrieval metrics in machine-readable format.
 
@@ -251,6 +277,7 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 ├── .env                         ← active config (not in git)
 ├── .env.example
 ├── docker-compose.yml
+├── test_queries.ps1             ← 50-query PowerShell live test (POST /api/search/answer)
 ├── backend
 │   ├── .env.example
 │   ├── Dockerfile
@@ -271,6 +298,11 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 │   │       │   ├── llm/provider.py          ← MockLLMProvider, OpenAIProvider, DeepSeekProvider
 │   │       │   ├── orchestration/search_pipeline.py
 │   │       │   ├── querying/                ← query normalization + classification
+│   │       │   │   └── classifier.py        ← QueryType routing (_STRATEGY_KEYWORDS tuned)
+│   │       │   ├── reranker/                ← cross-encoder abstraction
+│   │       │   │   ├── provider.py          ← BaseRerankerProvider ABC
+│   │       │   │   ├── service.py           ← rerank() + score_with_fallback(), 300 ms timeout
+│   │       │   │   └── providers/bge.py     ← BAAI/bge-reranker-base lazy singleton
 │   │       │   ├── reasoning/               ← confidence gate
 │   │       │   ├── responses/               ← SearchAnswerResponse, BatchSearchAnswerResponse
 │   │       │   ├── cache/                   ← exact + semantic Redis cache
@@ -279,16 +311,17 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 │   │       │   └── qdrant/                  ← generic retrieval service
 │   │       └── czechia/
 │   │           ├── retrieval/
-│   │           │   ├── query_analyzer.py    ← law ref + domain + paragraph detection
-│   │           │   ├── retrieval_planner.py ← RetrievalPlan per query mode
-│   │           │   ├── dense_retriever.py   ← czech_laws_v2, using="dense"
-│   │           │   ├── sparse_retriever.py  ← czech_laws_v2, BM25 SparseVector
-│   │           │   ├── fusion.py            ← RRF
-│   │           │   ├── reranker.py          ← multi-factor score reranker
+│   │           │   ├── query_analyzer.py        ← law ref + domain + paragraph detection
+│   │           │   ├── retrieval_planner.py      ← RetrievalPlan per query mode
+│   │           │   ├── dense_retriever.py        ← czech_laws_v2, using="dense"
+│   │           │   ├── sparse_retriever.py       ← czech_laws_v2, BM25 SparseVector
+│   │           │   ├── fusion.py                 ← RRF
+│   │           │   ├── reranker.py               ← multi-factor score reranker + structural penalties
+│   │           │   ├── cross_encoder_reranker.py ← BGE shim: heading + index-line penalties
 │   │           │   ├── evidence_validator.py
-│   │           │   ├── service.py           ← pipeline orchestrator
-│   │           │   ├── ambiguity_handler.py ← clarification for bare §N queries
-│   │           │   ├── adapter.py           ← bridges to generic RetrievalService
+│   │           │   ├── service.py                ← pipeline orchestrator
+│   │           │   ├── ambiguity_handler.py      ← clarification for bare §N queries
+│   │           │   ├── adapter.py                ← bridges to generic RetrievalService
 │   │           │   └── schemas.py
 │   │           └── ingestion/
 │   │               ├── service.py           ← streaming ingest + sha1 dedup
@@ -409,6 +442,9 @@ docker exec ai-legal-backend pytest tests -q
 
 # End-to-end retrieval tests (60 queries, requires running stack)
 docker exec ai-legal-backend python run_tests.py
+
+# Live HTTP test — 50 queries against POST /api/search/answer (requires running stack)
+.\test_queries.ps1
 
 # CI (GitHub Actions)
 # installs deps, compiles, runs pytest backend/tests, builds frontend
