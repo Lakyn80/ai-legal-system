@@ -88,3 +88,7 @@ class SearchAnswerResponse(BaseModel):
     decision: ConfidenceDecision
     response: StructuredAnswer
     results: list[SearchResultItem] = Field(default_factory=list)
+
+
+class BatchSearchAnswerResponse(BaseModel):
+    results: list[SearchAnswerResponse] = Field(default_factory=list)
