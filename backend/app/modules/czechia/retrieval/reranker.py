@@ -1,7 +1,30 @@
 from __future__ import annotations
 
+import re
+
 from app.modules.czechia.retrieval.schemas import EvidencePack, EvidencePackItem, QueryUnderstanding, RetrievalPlan
 from app.modules.czechia.retrieval.text_utils import overlap_ratio, pick_primary_paragraph
+
+# Numbered entries in derogation/amendment schedules, e.g.:
+#   "1. zákon č. 65/1965 Sb., zákoník práce ,"
+#   "16. nařízení vlády č. 108/1994 Sb., ..."
+# These rank artificially high on BM25 but are never the answer to an
+# informational query — penalise them early so they don't reach the top.
+_INDEX_LINE_RE = re.compile(
+    r"^\d{1,3}\.\s+(?:z[aá]kon|na[rř][íi]zen[íi]|vyhl[áa][šs]ka|sd[eě]len[íi])",
+    re.IGNORECASE | re.UNICODE,
+)
+_INDEX_LINE_PENALTY = 0.45
+
+
+def _structural_penalty(text: str) -> float:
+    """Return a static score penalty for non-substantive chunk types."""
+    value = (text or "").strip()
+    if not value:
+        return 0.0
+    if _INDEX_LINE_RE.match(value):
+        return _INDEX_LINE_PENALTY
+    return 0.0
 
 
 class CzechLawReranker:
@@ -37,7 +60,7 @@ class CzechLawReranker:
             structural_neighbor = bool(hit.get("_structural_neighbor"))
             text_overlap = overlap_ratio(understanding.normalized_tokens, str(hit.get("text", "")))
 
-            penalty = 0.0
+            penalty = _structural_penalty(str(hit.get("text", "")))
             if plan.law_filter and law_iri and law_iri not in plan.law_filter:
                 penalty += plan.boost_factors.law_mismatch_penalty
             elif (

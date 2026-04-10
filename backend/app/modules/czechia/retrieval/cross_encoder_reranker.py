@@ -24,20 +24,44 @@ _HEADING_VERB_HINTS = {
     "skonci", "skončí", "zacina", "začíná", "konci", "končí", "upravuje",
 }
 
+# Matches numbered entries from derogation/amendment schedules, e.g.:
+#   "1. zákon č. 65/1965 Sb., zákoník práce ,"
+#   "16. nařízení vlády č. 108/1994 Sb., ..."
+# These are index lines in a law's derogation schedule — not substantive text.
+_INDEX_LINE_RE = re.compile(
+    r"^\d{1,3}\.\s+(?:z[aá]kon|na[rř][íi]zen[íi]|vyhl[áa][šs]ka|sd[eě]len[íi])",
+    re.IGNORECASE | re.UNICODE,
+)
 
-def _heading_penalty(text: str) -> float:
-    """Return score penalty for short heading chunks that lack verb content."""
+
+def _chunk_penalty(text: str) -> float:
+    """
+    Return total score penalty for non-substantive chunk types.
+
+    Penalties applied (cumulative):
+    - 0.35  short heading without verb content  (e.g. "DOVOLENÁ", "VÝPOVĚĎ")
+    - 0.50  numbered law-reference index line    (e.g. "1. zákon č. 65/1965 Sb.,")
+    """
     value = (text or "").strip()
     if not value:
         return 0.0
+
+    penalty = 0.0
+
+    # ── index-line penalty ────────────────────────────────────────────────────
+    # Numbered entries from derogation/amendment schedules rank artificially
+    # high on BM25 because they contain many law names.  They are never the
+    # answer to an informational query.
+    if _INDEX_LINE_RE.match(value):
+        penalty += 0.50
+
+    # ── heading penalty ───────────────────────────────────────────────────────
     words = re.findall(r"\w+", value, flags=re.UNICODE)
-    if len(value) >= 80 or len(words) > 8:
-        return 0.0
-    if "." in value:
-        return 0.0
-    if any(hint in value.lower() for hint in _HEADING_VERB_HINTS):
-        return 0.0
-    return 0.35
+    if len(value) < 80 and len(words) <= 8 and "." not in value:
+        if not any(hint in value.lower() for hint in _HEADING_VERB_HINTS):
+            penalty += 0.35
+
+    return penalty
 
 
 def rerank(query: str, items: list[EvidencePackItem], top_n: int = 10) -> list[EvidencePackItem]:
@@ -64,12 +88,12 @@ def rerank(query: str, items: list[EvidencePackItem], top_n: int = 10) -> list[E
 
     remainder = items[len(subset):]
 
-    # sort by (cross_encoder_score - heading_penalty) descending
+    # sort by (cross_encoder_score - chunk_penalty) descending
     # tie-break by original index to keep stable ordering
     ranked = sorted(
         enumerate(zip(subset, scores)),
         key=lambda entry: (
-            -(float(entry[1][1]) - _heading_penalty(entry[1][0].text or "")),
+            -(float(entry[1][1]) - _chunk_penalty(entry[1][0].text or "")),
             entry[0],
         ),
     )

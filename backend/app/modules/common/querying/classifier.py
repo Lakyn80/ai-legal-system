@@ -25,8 +25,10 @@ class QueryClassifier:
         "argumenty",
         "obrana",
         "obhajoba",
-        "narok",
-        "naroku",
+        # "narok" / "naroku" intentionally excluded:
+        # "nárok" is a basic Czech legal term (entitlement/right) that appears in
+        # ordinary informational queries like "zaměstnanec nárok na odstupné".
+        # Routing those to strategy_answer is wrong — they need law retrieval.
         "riziko",
         "risk",
         "claim",
