@@ -9,6 +9,7 @@ from app.modules.common.query_parser import parse_query
 from app.modules.common.embeddings.provider import EmbeddingService
 from app.modules.common.qdrant.schemas import SearchRequest, SearchResultItem
 from app.modules.czechia.retrieval.ambiguity_handler import AmbiguityResult, CzechAmbiguityHandler
+from app.modules.czechia.retrieval.cross_encoder_reranker import rerank as cross_encoder_rerank
 from app.modules.czechia.retrieval.dense_retriever import CzechLawDenseRetriever
 from app.modules.czechia.retrieval.evidence_validator import CzechLawEvidenceValidator
 from app.modules.czechia.retrieval.fusion import rrf_fuse
@@ -101,7 +102,15 @@ class CzechLawRetrievalService:
                 top_k=request.top_k,
             )
 
-        items = validation.evidence_pack.items[: request.top_k]
+        ranked_items = validation.evidence_pack.items
+        if plan.mode != "exact":
+            ranked_items = cross_encoder_rerank(
+                query=parsed["normalized_query"],
+                items=ranked_items,
+                top_n=10,
+            )
+
+        items = ranked_items[: request.top_k]
         items = self._apply_keyword_boost(
             items=items,
             query_text=parsed["normalized_query"],
