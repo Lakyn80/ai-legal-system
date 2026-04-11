@@ -22,6 +22,7 @@ _HEADING_VERB_HINTS = {
     "je", "jsou", "musi", "musí", "muze", "může", "lze",
     "byla", "byly", "byl", "cini", "činí", "obsahuje", "obsahovat",
     "skonci", "skončí", "zacina", "začíná", "konci", "končí", "upravuje",
+    "má", "ma", "vzniká", "vznika", "zaniká", "zanika", "trvá", "trva",
 }
 
 # Matches numbered entries from derogation/amendment schedules, e.g.:
@@ -32,6 +33,14 @@ _INDEX_LINE_RE = re.compile(
     r"^\d{1,3}\.\s+(?:z[aá]kon|na[rř][íi]zen[íi]|vyhl[áa][šs]ka|sd[eě]len[íi])",
     re.IGNORECASE | re.UNICODE,
 )
+_SECTION_HEADING_RE = re.compile(
+    r"^(?:část|hlava|díl|oddíl|pododdíl|kapitola)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_AMENDMENT_LINE_RE = re.compile(
+    r"(?:z[aá]kon|na[rř][íi]zen[íi](?:\s+vl[aá]dy)?|vyhl[áa][šs]ka|sd[eě]len[íi])\s+č\.",
+    re.IGNORECASE | re.UNICODE,
+)
 
 
 def _chunk_penalty(text: str) -> float:
@@ -39,29 +48,43 @@ def _chunk_penalty(text: str) -> float:
     Return total score penalty for non-substantive chunk types.
 
     Penalties applied (cumulative):
-    - 0.35  short heading without verb content  (e.g. "DOVOLENÁ", "VÝPOVĚĎ")
-    - 0.50  numbered law-reference index line    (e.g. "1. zákon č. 65/1965 Sb.,")
+    - 0.40  short heading without verb content  (e.g. "DOVOLENÁ", "VÝPOVĚĎ")
+    - 0.55  numbered law-reference index line    (e.g. "1. zákon č. 65/1965 Sb.,")
+    - 0.45  section / chapter heading            (e.g. "HLAVA II")
+    - 0.35  short amendment line                 (e.g. "zákon č. 65/1965 Sb.")
     """
     value = (text or "").strip()
     if not value:
         return 0.0
 
     penalty = 0.0
+    words = re.findall(r"\w+", value, flags=re.UNICODE)
 
     # ── index-line penalty ────────────────────────────────────────────────────
     # Numbered entries from derogation/amendment schedules rank artificially
     # high on BM25 because they contain many law names.  They are never the
     # answer to an informational query.
     if _INDEX_LINE_RE.match(value):
-        penalty += 0.50
+        penalty += 0.55
+    elif _AMENDMENT_LINE_RE.search(value) and len(value) < 140:
+        penalty += 0.35
+
+    if _SECTION_HEADING_RE.match(value):
+        penalty += 0.45
 
     # ── heading penalty ───────────────────────────────────────────────────────
-    words = re.findall(r"\w+", value, flags=re.UNICODE)
-    if len(value) < 80 and len(words) <= 8 and "." not in value:
+    if len(value) < 120 and len(words) <= 12 and not re.search(r"[.!?;:]", value):
         if not any(hint in value.lower() for hint in _HEADING_VERB_HINTS):
-            penalty += 0.35
+            penalty += 0.40
+            if _is_all_caps_heading(value):
+                penalty += 0.15
 
-    return penalty
+    return min(penalty, 0.90)
+
+
+def _is_all_caps_heading(text: str) -> bool:
+    letters = re.sub(r"[^A-Za-zÀ-ž]", "", text, flags=re.UNICODE)
+    return bool(letters) and letters == letters.upper()
 
 
 def rerank(query: str, items: list[EvidencePackItem], top_n: int = 10) -> list[EvidencePackItem]:

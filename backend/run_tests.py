@@ -1,8 +1,9 @@
-"""98-query stress test for Czech law retrieval."""
+"""Stress tests for Czech law retrieval and answer grounding."""
 import json
 import sys
 import urllib.request
 import urllib.error
+import re
 
 BASE = "http://localhost:8000/api"
 
@@ -76,6 +77,64 @@ TESTS = [
     ("UEFA Champions League výsledky", None, "irrelevant"),
 ]
 
+ANSWER_TESTS = [
+    {
+        "query": "§ 52 zákoník práce",
+        "expected_doc": "262/2006",
+        "required_any": ["výpověď", "důvody výpovědi", "zaměstnavatel"],
+        "forbidden": ["okamžité zrušení pracovního poměru"],
+    },
+    {
+        "query": "zákon 500/2004 § 3",
+        "expected_doc": "500/2004",
+        "required_any": ["správní orgán", "správní orgány", "veřejný zájem", "dotčené osoby"],
+        "forbidden": ["zaměstnavatel", "pracovní poměr", "výpověď"],
+    },
+    {
+        "query": "kupní smlouva občanský zákoník",
+        "expected_doc": "89/2012",
+        "required_any": ["kupní smlouv", "prodávaj", "kupující", "koupě"],
+        "forbidden": [
+            "v poskytnutých úryvcích není",
+            "v úryvcích není",
+            "není relevantní ustanovení",
+            "nebylo možné najít relevantní ustanovení",
+        ],
+        "top_chunk_must_be_substantive": True,
+    },
+    {
+        "query": "výpovědní doba zákoník práce",
+        "expected_doc": "262/2006",
+        "required_any": ["výpovědní doba", "2 měsíce", "dva měsíce"],
+        "top_chunk_must_be_substantive": True,
+    },
+    {
+        "query": "pracovní smlouva zákoník práce náležitosti",
+        "expected_doc": "262/2006",
+        "required_any": [
+            "pracovní smlouva musí obsahovat",
+            "druh práce",
+            "místo výkonu práce",
+            "den nástupu",
+        ],
+        "top_chunk_must_be_substantive": True,
+    },
+]
+
+_STRUCTURAL_INDEX_RE = re.compile(
+    r"^\d{1,3}\.\s+(?:z[aá]kon|na[rř][íi]zen[íi]|vyhl[áa][šs]ka|sd[eě]len[íi])",
+    re.IGNORECASE | re.UNICODE,
+)
+_STRUCTURAL_SECTION_RE = re.compile(
+    r"^(?:část|hlava|díl|oddíl|pododdíl|kapitola)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_HEADING_VERB_HINTS = (
+    "je", "jsou", "má", "ma", "musí", "musi", "může", "muze", "lze",
+    "činí", "cini", "obsahuje", "obsahovat", "upravuje", "vzniká",
+    "vznika", "zaniká", "zanika", "trvá", "trva",
+)
+
 
 def post_search(query: str, top_k: int = 5):
     payload = json.dumps({
@@ -91,6 +150,23 @@ def post_search(query: str, top_k: int = 5):
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def post_search_answer(query: str, top_k: int = 3):
+    payload = json.dumps({
+        "query": query,
+        "country": "czechia",
+        "domain": "law",
+        "top_k": top_k,
+    }).encode()
+    req = urllib.request.Request(
+        f"{BASE}/search/answer",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
 
@@ -110,6 +186,21 @@ def _doc_matches(doc_id: str, expected: str) -> bool:
         number, year = parts
         iri = f"local:sb/{year}/{number}"
         if iri == doc_id or iri in doc_id:
+            return True
+    return False
+
+
+def _is_structural_text(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return True
+    if _STRUCTURAL_INDEX_RE.match(value) or _STRUCTURAL_SECTION_RE.match(value):
+        return True
+
+    words = re.findall(r"\w+", value, flags=re.UNICODE)
+    if len(value) < 120 and len(words) <= 12 and not re.search(r"[.!?;:]", value):
+        lowered = value.lower()
+        if not any(hint in lowered for hint in _HEADING_VERB_HINTS):
             return True
     return False
 
@@ -151,6 +242,37 @@ def check_result(data: dict, expected_doc: str | None, category: str) -> tuple[b
     return False, f"expected {expected_doc!r} got {top_doc!r} score={score:.3f} text={text_snippet!r}"
 
 
+def check_answer_result(spec: dict, data: dict) -> tuple[bool, str]:
+    results = data.get("results", [])
+    response = data.get("response") or {}
+    if not results:
+        return False, "empty results"
+
+    top = results[0]
+    top_doc = top.get("document_id", "")
+    if not _doc_matches(top_doc, spec["expected_doc"]):
+        return False, f"expected top doc {spec['expected_doc']!r}, got {top_doc!r}"
+
+    top_text = top.get("text") or ""
+    if spec.get("top_chunk_must_be_substantive") and _is_structural_text(top_text):
+        return False, f"top chunk is structural: {top_text[:80]!r}"
+
+    summary = str(response.get("summary") or "")
+    explanation = str(response.get("explanation") or "")
+    answer_text = f"{summary}\n{explanation}".lower()
+
+    required_any = [item.lower() for item in spec.get("required_any", [])]
+    if required_any and not any(item in answer_text for item in required_any):
+        return False, f"missing required explanation signal from {required_any!r}"
+
+    forbidden = [item.lower() for item in spec.get("forbidden", [])]
+    for phrase in forbidden:
+        if phrase in answer_text:
+            return False, f"forbidden phrase present: {phrase!r}"
+
+    return True, f"doc={top_doc!r} top={top_text[:60]!r}"
+
+
 def main():
     passed = 0
     failed = 0
@@ -179,8 +301,29 @@ def main():
             failed += 1
             fail_lines.append(line)
 
+    print("-" * 120)
+    for spec in ANSWER_TESTS:
+        query = spec["query"]
+        try:
+            data = post_search_answer(query)
+            ok, detail = check_answer_result(spec, data)
+        except Exception as exc:
+            ok = False
+            detail = f"ERROR: {exc}"
+            errors += 1
+
+        status = "PASS" if ok else "FAIL"
+        line = "{:<50} {:<14} {:<8}  {}".format(query[:49], "answer_eval", status, detail)
+        print(line)
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+            fail_lines.append(line)
+
     print("\n" + "=" * 120)
-    print(f"TOTAL: {len(TESTS)}  PASS: {passed}  FAIL: {failed}  ERRORS: {errors}")
+    total = len(TESTS) + len(ANSWER_TESTS)
+    print(f"TOTAL: {total}  PASS: {passed}  FAIL: {failed}  ERRORS: {errors}")
     if fail_lines:
         print("\nFAILED:")
         for l in fail_lines:

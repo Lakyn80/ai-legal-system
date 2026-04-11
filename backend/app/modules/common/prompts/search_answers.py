@@ -27,22 +27,29 @@ def is_substantive(text: str) -> bool:
     Return True if the chunk contains actual legal text worth sending to the LLM.
 
     Rejected:
-    - empty / very short (< 55 chars)
+    - empty / very short (< 30 chars)
     - numbered derogation index lines  ("1. zákon č. 65/1965 Sb., ...")
     - section / chapter headings       ("ČÁST PRVNÍ", "HLAVA II")
     - anything without a verb or digit (pure heading words)
+
+    Note: 30-char minimum (reduced from 55) keeps short but substantive clause
+    sub-items like "a) ruší-li se zaměstnavatel nebo jeho část," (43 chars)
+    while still rejecting bare headings like "§ 52" (4 chars).
     """
     value = (text or "").strip()
-    if len(value) < 55:
+    if len(value) < 30:
         return False
     if _INDEX_LINE_RE.match(value):
         return False
     if _SECTION_HEADING_RE.match(value):
         return False
-    # Must contain at least a digit (§ number, year, amount) or a verb hint
+    # Must contain at least a digit (§ number, year, amount) or a verb hint.
+    # Czech legal clause sub-items often use conditional -li forms (ruší-li,
+    # přemísťuje-li, stane-li) which are definitively substantive content.
     if not re.search(r"\d", value) and not re.search(
         r"\b(?:je|jsou|má|může|musí|lze|byl|byla|bylo|byli|stanoví|upravuje|"
-        r"určuje|zakazuje|ukládá|přísluší|vzniká|zaniká|trvá|skončí)\b",
+        r"určuje|zakazuje|ukládá|přísluší|vzniká|zaniká|trvá|skončí)\b"
+        r"|\w+-li\b",  # Czech conditional -li suffix (ruší-li, stane-li, ...)
         value,
         re.IGNORECASE | re.UNICODE,
     ):
@@ -110,7 +117,7 @@ def build_search_explanation_prompt(
     - Formats sources as readable labeled blocks, not raw JSON
     - Adds explicit instruction to derive answer only from numbered sources
     """
-    chunks = pick_substantive_chunks(retrieval.results, max_chunks=3)
+    chunks = pick_substantive_chunks(retrieval.results, max_chunks=5)
 
     lines: list[str] = []
     lines.append(f"DOTAZ: {query_context.raw_query}")

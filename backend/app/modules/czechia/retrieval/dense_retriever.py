@@ -1,11 +1,100 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 from app.modules.czechia.retrieval.text_utils import extract_paragraphs_from_payload
+
+# ── sort helpers for exact_lookup ─────────────────────────────────────────────
+#
+# Problem: paragraph=N is a *context* tag set by local_loader, not a "belongs to"
+# tag.  All fragments between §52 and §53 in the source document get paragraph=52,
+# including structural headings ("Díl 4", "HLAVA III"), section titles that precede
+# the next Paragraf node, and fragments from other provisions that cross-reference
+# §52 in their text.
+#
+# Fix: sort by chunk rank so substantive §N text rises to the top.
+#
+#   rank 0 — primary: substantive text that belongs to §N
+#             (does not contain "§ N" as a cross-reference, has enough substance)
+#   rank 1 — structural: short heading/title text without legal content
+#             (inherited paragraph context, not actual §N text)
+#   rank 2 — cross-reference: text from another provision that cites §N inline
+#             (contains "§ N" but is not the heading "§ N")
+#
+# Lower rank = higher sort priority (ascending).
+
+_SECTION_HEADING_RANK_RE = re.compile(
+    r"^(?:část|hlava|díl|oddíl|pododdíl|kapitola)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+_FRAGMENT_ID_SUFFIX_RE = re.compile(r"/(\d+)$")
+
+
+def _fragment_id_numeric(payload: dict) -> int | None:
+    """Extract the trailing numeric component from a fragment_id like 'local:sb/2006/262/6661131'."""
+    m = _FRAGMENT_ID_SUFFIX_RE.search(str(payload.get("fragment_id", "")))
+    return int(m.group(1)) if m else None
+
+
+def _heading_fragment_id(results: list[dict]) -> int | None:
+    """Return the numeric fragment_id of the exact-heading-match chunk, if any."""
+    for payload in results:
+        if payload.get("_exact_heading_match"):
+            return _fragment_id_numeric(payload)
+    return None
+
+
+def _paragraph_chunk_rank(payload: dict, paragraph_set: set[str], heading_fid: int | None = None) -> int:
+    """
+    Return sort rank for exact_lookup ordering.  Lower = higher priority.
+
+    rank 0  primary text   — substantive content that IS this paragraph
+    rank 1  structural     — heading/title with inherited paragraph context, or a
+                             fragment that physically precedes the §N heading in the
+                             document (got paragraph=N via context inheritance from
+                             the prior section, not because it belongs to §N)
+    rank 2  cross-ref      — text from another provision citing §N inline
+    """
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return 1
+
+    # Cross-reference: text contains "§ N" but is not the bare heading "§ N"
+    # (the bare heading is handled by _exact_heading_match, rank 0 via that path)
+    for paragraph in paragraph_set:
+        ref = f"§ {paragraph}"
+        if ref in text and not (text == ref or text.startswith(ref + " ")):
+            return 2
+
+    # Structural heading: matches section-level keywords OR is short with no
+    # digits and no sentence-ending punctuation (title-like text).
+    if _SECTION_HEADING_RANK_RE.match(text):
+        return 1
+    words = re.findall(r"\w+", text, flags=re.UNICODE)
+    if (
+        len(text) < 60
+        and len(words) <= 7
+        and not re.search(r"\d", text)
+        and not re.search(r"[.;]", text)
+    ):
+        return 1
+
+    # Pre-paragraph inherited context: fragment physically precedes the §N heading
+    # in the source document (numerically lower fragment_id).  local_loader sets
+    # paragraph=N on ALL fragments between §N-1 and §N, so fragments that belonged
+    # to the previous section carry paragraph=N incorrectly.
+    if heading_fid is not None:
+        fid = _fragment_id_numeric(payload)
+        if fid is not None and fid < heading_fid:
+            return 1
+
+    return 0  # primary substantive text
 
 _COLLECTION = "czech_laws_v2"
 _QDRANT_TIMEOUT = 30
@@ -65,9 +154,15 @@ class CzechLawDenseRetriever:
 
         target_law_iris = law_iris if law_iris else [None]
 
+        # Overscan cap: collect up to this many raw candidates before sort+truncate.
+        # Must be > _SCROLL_BATCH so the inner loop always drains each Qdrant page
+        # fully — the exact-heading chunk can appear anywhere in scroll order and
+        # must not be skipped because we hit `limit` early.
+        _OVERSCAN = _SCROLL_BATCH * 4
+
         for law_iri in target_law_iris:
             offset = None
-            while len(results) < limit:
+            while len(results) < _OVERSCAN:
                 must_conditions: list[models.FieldCondition] = [
                     models.FieldCondition(
                         key="paragraph",
@@ -111,17 +206,16 @@ class CzechLawDenseRetriever:
                     payload["_exact_match"] = True
                     payload["_exact_heading_match"] = _is_exact_heading_match(payload, paragraph_set)
                     results.append(payload)
-                    if len(results) >= limit:
-                        break
 
                 if offset is None:
                     break
 
+        heading_fid = _heading_fragment_id(results)
         results.sort(
             key=lambda payload: (
-                -int(bool(payload.get("_exact_heading_match"))),
-                -int(bool(payload.get("_exact_match"))),
-                int(payload.get("chunk_index", 0) or 0),
+                -int(bool(payload.get("_exact_heading_match"))),        # "§ 52" literal first
+                _paragraph_chunk_rank(payload, paragraph_set, heading_fid),  # primary < structural < cross-ref
+                int(payload.get("chunk_index", 0) or 0),                # within-fragment order
                 str(payload.get("fragment_id", "")),
                 str(payload.get("chunk_id", "")),
             )

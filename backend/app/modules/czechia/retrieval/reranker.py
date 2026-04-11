@@ -14,7 +14,43 @@ _INDEX_LINE_RE = re.compile(
     r"^\d{1,3}\.\s+(?:z[aá]kon|na[rř][íi]zen[íi]|vyhl[áa][šs]ka|sd[eě]len[íi])",
     re.IGNORECASE | re.UNICODE,
 )
-_INDEX_LINE_PENALTY = 0.45
+_SECTION_HEADING_RE = re.compile(
+    r"^(?:část|hlava|díl|oddíl|pododdíl|kapitola)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_AMENDMENT_LINE_RE = re.compile(
+    r"(?:z[aá]kon|na[rř][íi]zen[íi](?:\s+vl[aá]dy)?|vyhl[áa][šs]ka|sd[eě]len[íi])\s+č\.",
+    re.IGNORECASE | re.UNICODE,
+)
+_HEADING_VERB_HINTS = {
+    "je",
+    "jsou",
+    "má",
+    "ma",
+    "musí",
+    "musi",
+    "může",
+    "muze",
+    "lze",
+    "činí",
+    "cini",
+    "obsahuje",
+    "obsahovat",
+    "upravuje",
+    "vzniká",
+    "vznika",
+    "zaniká",
+    "zanika",
+    "trvá",
+    "trva",
+    "skončí",
+    "skonci",
+}
+_INDEX_LINE_PENALTY = 0.55
+_HEADING_PENALTY = 0.35
+_SECTION_HEADING_PENALTY = 0.45
+_ALL_CAPS_HEADING_PENALTY = 0.15
+_AMENDMENT_LINE_PENALTY = 0.35
 
 
 def _structural_penalty(text: str) -> float:
@@ -22,9 +58,44 @@ def _structural_penalty(text: str) -> float:
     value = (text or "").strip()
     if not value:
         return 0.0
+
+    penalty = 0.0
+    words = re.findall(r"\w+", value, flags=re.UNICODE)
+
     if _INDEX_LINE_RE.match(value):
-        return _INDEX_LINE_PENALTY
-    return 0.0
+        penalty += _INDEX_LINE_PENALTY
+    elif _AMENDMENT_LINE_RE.search(value) and len(value) < 140:
+        penalty += _AMENDMENT_LINE_PENALTY
+
+    if _SECTION_HEADING_RE.match(value):
+        penalty += _SECTION_HEADING_PENALTY
+
+    if _looks_like_heading(value, words):
+        penalty += _HEADING_PENALTY
+        if _is_all_caps_heading(value):
+            penalty += _ALL_CAPS_HEADING_PENALTY
+
+    return min(penalty, 0.85)
+
+
+def _looks_like_heading(value: str, words: list[str]) -> bool:
+    if not words:
+        return False
+    if len(value) >= 120 or len(words) > 12:
+        return False
+    if re.search(r"[.!?;:]", value):
+        return False
+
+    lowered = value.lower()
+    if any(hint in lowered for hint in _HEADING_VERB_HINTS):
+        return False
+
+    return True
+
+
+def _is_all_caps_heading(value: str) -> bool:
+    letters = re.sub(r"[^A-Za-zÀ-ž]", "", value, flags=re.UNICODE)
+    return bool(letters) and letters == letters.upper()
 
 
 class CzechLawReranker:
