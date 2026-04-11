@@ -60,21 +60,27 @@ class CzechLawRetrievalPlanner:
             return self._apply_forced_signals(plan, forced_paragraph=forced_paragraph, forced_law=forced_law)
 
         if understanding.query_mode == "law_constrained_search":
+            # Topic mode: law known but no explicit paragraph — fetch more candidates
+            # and use a wider structural window so neighboring chunks of the matched
+            # section are included.  text_overlap_weight raised to reward chunks
+            # whose text contains the actual query keywords (výpověď, odstupné…).
+            is_topic = not understanding.detected_paragraphs
             plan = RetrievalPlan(
                 law_filter=law_filter,
                 paragraph_filter=list(understanding.detected_paragraphs),
                 preferred_law_iris=preferred_law_iris,
-                candidate_k=_candidate_k(top_k, 75),
+                candidate_k=_candidate_k(top_k, 120 if is_topic else 75),
                 boost_factors=RetrievalBoostFactors(
                     law_match_boost=0.32,
                     paragraph_match_boost=0.30,
                     preferred_law_boost=0.12,
                     exact_match_boost=0.35,
-                    structural_neighbor_boost=0.05,
-                    text_overlap_weight=0.26,
+                    structural_neighbor_boost=0.06,
+                    text_overlap_weight=0.32 if is_topic else 0.26,
                     law_mismatch_penalty=0.45,
                 ),
                 mode="constrained",
+                structural_window=2 if is_topic else 1,
             )
             return self._apply_forced_signals(plan, forced_paragraph=forced_paragraph, forced_law=forced_law)
 

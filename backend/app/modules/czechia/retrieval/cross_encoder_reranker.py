@@ -28,9 +28,10 @@ _HEADING_VERB_HINTS = {
 # Matches numbered entries from derogation/amendment schedules, e.g.:
 #   "1. zákon č. 65/1965 Sb., zákoník práce ,"
 #   "16. nařízení vlády č. 108/1994 Sb., ..."
+#   "21. Část první zákona č. 367/2000 Sb., ..."  ← part-of-act entries
 # These are index lines in a law's derogation schedule — not substantive text.
 _INDEX_LINE_RE = re.compile(
-    r"^\d{1,3}\.\s+(?:z[aá]kon|na[rř][íi]zen[íi]|vyhl[áa][šs]ka|sd[eě]len[íi])",
+    r"^\d{1,3}\.\s+(?:(?:část|hlava|díl)\s+\w+\s+)?(?:z[aá]kon|na[rř][íi]zen[íi]|vyhl[áa][šs]ka|sd[eě]len[íi])",
     re.IGNORECASE | re.UNICODE,
 )
 _SECTION_HEADING_RE = re.compile(
@@ -102,7 +103,7 @@ def rerank(query: str, items: list[EvidencePackItem], top_n: int = 10) -> list[E
         query=query,
         results=items,
         candidate_limit=top_n,
-        timeout_ms=300,
+        timeout_ms=1200,
     )
 
     # fail-open: scores is None on timeout/exception

@@ -41,6 +41,10 @@ class QueryUnderstanding:
     keywords: list[str] = field(default_factory=list)
     normalized_tokens: list[str] = field(default_factory=list)
     domain_confidence: float = 0.0
+    # Expanded query for sparse (BM25) retrieval only.
+    # Set when the query matches a known topic keyword (výpověď, odstupné, …).
+    # Dense retrieval always uses cleaned_query so embedding quality is unaffected.
+    expanded_query: str | None = None
 
 
 @dataclass(slots=True)

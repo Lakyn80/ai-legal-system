@@ -14,7 +14,7 @@ from app.modules.czechia.retrieval.dense_retriever import CzechLawDenseRetriever
 from app.modules.czechia.retrieval.evidence_validator import CzechLawEvidenceValidator
 from app.modules.czechia.retrieval.fusion import rrf_fuse
 from app.modules.czechia.retrieval.query_analyzer import CzechQueryAnalyzer
-from app.modules.czechia.retrieval.reranker import CzechLawReranker
+from app.modules.czechia.retrieval.reranker import CzechLawReranker, diversify_by_paragraph
 from app.modules.czechia.retrieval.retrieval_planner import CzechLawRetrievalPlanner
 from app.modules.czechia.retrieval.schemas import CandidateBatch, EvidencePack, EvidencePackItem, QueryUnderstanding, RetrievalPlan
 from app.modules.czechia.retrieval.sparse_retriever import CzechLawSparseRetriever
@@ -103,11 +103,21 @@ class CzechLawRetrievalService:
             )
 
         ranked_items = validation.evidence_pack.items
-        if plan.mode != "exact":
+        is_topic_mode = plan.mode != "exact"
+        if is_topic_mode:
             ranked_items = cross_encoder_rerank(
                 query=parsed["normalized_query"],
                 items=ranked_items,
                 top_n=10,
+            )
+            # Paragraph diversification: for topic/domain queries ensure coverage
+            # across different paragraphs (max 2 chunks per paragraph) so the
+            # answer draws from several relevant sections rather than repeating
+            # one paragraph's sub-items.
+            ranked_items = diversify_by_paragraph(
+                items=ranked_items,
+                top_k=request.top_k * 3,  # diversify over a larger pool, trim later
+                max_per_paragraph=2,
             )
 
         items = ranked_items[: request.top_k]
@@ -117,35 +127,45 @@ class CzechLawRetrievalService:
             is_exact=(plan.mode == "exact"),
         )
 
-        # ── confidence gate ───────────────────────────────────────────────────
-        # Fire when the query has zero legal context signal:
-        #   - no law refs, no paragraphs (would have triggered exact/constrained mode)
-        #   - domain unknown (no Czech legal vocabulary matched)
-        #   - none of the query's meaningful tokens appear in ANY returned chunk text
-        # This catches pure nonsense, foreign-language, and off-topic queries
-        # without depending on a magic score threshold that breaks with data changes.
-        if (
-            plan.mode == "broad"
-            and understanding.detected_domain == "unknown"
-            and not understanding.detected_law_refs
-            and not understanding.detected_paragraphs
-            and items
-        ):
-            query_tokens_list = [
-                t for t in understanding.keywords
-                if len(t) >= 4 and t not in {"text", "data", "cast", "nebo", "jako"}
-            ]
-            if query_tokens_list:
-                # Use token overlap ratio against normalized text (strips diacritics).
-                # A real legal query will have many of its tokens appear in the results;
-                # an off-topic query (e.g. "počasí Praha zítra") may accidentally match
-                # one proper noun but won't reach 50% overlap.
-                max_overlap = max(
-                    overlap_ratio(query_tokens_list, item.text or "")
-                    for item in items
+        # ── confidence / relevance gate ───────────────────────────────────────
+        # Fire when the query has zero legal context signal AND results are weak.
+        # Covers two cases:
+        #   1. broad mode, unknown domain — same as before (off-topic / nonsense)
+        #   2. domain_search mode — law identified by domain signal but returned
+        #      chunks share almost no tokens with the query (garbage BM25 match)
+        #      Threshold is lower (0.3) because domain queries are less specific.
+        query_tokens_list = [
+            t for t in understanding.keywords
+            if len(t) >= 4 and t not in {"text", "data", "cast", "nebo", "jako"}
+        ]
+
+        if items and query_tokens_list:
+            max_overlap = max(
+                overlap_ratio(query_tokens_list, item.text or "")
+                for item in items
+            )
+            broad_garbage = (
+                plan.mode == "broad"
+                and understanding.detected_domain == "unknown"
+                and not understanding.detected_law_refs
+                and not understanding.detected_paragraphs
+                and max_overlap < 0.5
+            )
+            domain_garbage = (
+                plan.mode == "constrained"
+                and not plan.law_filter           # domain_search: preferred only, no hard filter
+                and understanding.detected_domain != "unknown"
+                and not understanding.detected_paragraphs
+                and max_overlap < 0.3
+            )
+            if broad_garbage or domain_garbage:
+                log.info(
+                    "czech retrieval: low-overlap gate fired mode=%s domain=%s overlap=%.2f",
+                    plan.mode,
+                    understanding.detected_domain,
+                    max_overlap,
                 )
-                if max_overlap < 0.5:
-                    return [self._irrelevant_query_response()]
+                return [self._irrelevant_query_response()]
 
         # ── relevance filter ──────────────────────────────────────────────────
         query_text = parsed["normalized_query"]
@@ -319,9 +339,21 @@ class CzechLawRetrievalService:
             return self._build_exact_evidence_pack(exact_hits, understanding, plan)
 
         search_query = understanding.cleaned_query or query
+        # Dense retrieval always uses the original cleaned_query for best embedding quality.
+        # Sparse (BM25) retrieval uses the expanded query when available so that
+        # topic triggers like "výpověď" expand to "výpověď § 52 § 53 …" and hit
+        # paragraph headings instead of derogation-index lines.
+        sparse_query = understanding.expanded_query or search_query
+        if understanding.expanded_query:
+            log.debug(
+                "czech retrieval: sparse expansion active query=%r expanded=%r",
+                search_query,
+                understanding.expanded_query,
+            )
         query_vector = self._embedding.embed_query(search_query)
         candidates = self._generate_candidates(
             search_query=search_query,
+            sparse_query=sparse_query,
             query_vector=query_vector,
             understanding=understanding,
             plan=plan,
@@ -348,6 +380,7 @@ class CzechLawRetrievalService:
         query_vector: list[float],
         understanding: QueryUnderstanding,
         plan: RetrievalPlan,
+        sparse_query: str | None = None,
     ) -> CandidateBatch:
         exact_hits: list[dict] = []
         target_laws_for_exact = plan.law_filter or plan.preferred_law_iris
@@ -366,6 +399,9 @@ class CzechLawRetrievalService:
                 neighbor_hits=[],
             )
 
+        # sparse_query: expanded form for BM25 (or falls back to search_query)
+        _sparse_query = sparse_query or search_query
+
         futures = {}
         with ThreadPoolExecutor(max_workers=4) as executor:
             if plan.use_dense:
@@ -378,7 +414,7 @@ class CzechLawRetrievalService:
             if plan.use_sparse:
                 futures["sparse"] = executor.submit(
                     self._sparse.retrieve,
-                    query_text=search_query,
+                    query_text=_sparse_query,
                     law_iris=plan.law_filter or None,
                     top_k=plan.candidate_k,
                 )
@@ -392,7 +428,7 @@ class CzechLawRetrievalService:
             if plan.use_sparse and plan.preferred_law_iris and not plan.law_filter:
                 futures["sparse_preferred"] = executor.submit(
                     self._sparse.retrieve,
-                    query_text=search_query,
+                    query_text=_sparse_query,
                     law_iris=plan.preferred_law_iris,
                     top_k=max(12, plan.candidate_k // 2),
                 )

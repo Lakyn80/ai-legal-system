@@ -156,6 +156,78 @@ _STOPWORD_STEMS: tuple[str, ...] = (
     "republik",
 )
 
+# ── Topic keyword → BM25 expansion ────────────────────────────────────────────
+#
+# Passed ONLY to the sparse (BM25) retriever so that topic queries hit paragraph
+# headings and substantive provisions instead of derogation-index lines.
+# Dense retrieval always uses cleaned_query so embedding quality is unaffected.
+#
+# Rules:
+#   - triggers are substrings of normalize_text(query)   (no diacritics, lowercase)
+#   - sorted longest-first so the most specific trigger fires
+#   - expansion is APPENDED to the original query — original tokens still count
+#   - do NOT add triggers so generic they fire on every query (e.g. "prace")
+
+_TOPIC_KEYWORD_EXPANSIONS: list[tuple[str, str]] = [
+    # ── zákoník práce (262/2006) ───────────────────────────────────────────────
+    ("vypoved z pracovniho pomeru",    "výpověď § 50 § 52 § 53 § 54 § 55"),
+    ("okamzite zruseni",               "okamžité zrušení § 55 § 56 § 57"),
+    ("skonceni pracovniho pomeru",     "skončení pracovního poměru § 48 § 49 § 50"),
+    ("pracovni pomer na dobu urcitou", "pracovní poměr § 39 § 65"),
+    ("zkusebni doba",                  "zkušební doba § 35"),
+    ("vypoved zakonik",                "výpověď § 50 § 52 § 53"),
+    ("vypoved zamestnanec",            "výpověď zaměstnanec § 50 § 52"),
+    ("vypoved zamestnavatel",          "výpověď zaměstnavatel § 52"),
+    ("vypoved",                        "výpověď § 50 § 52 § 53"),
+    ("odstupne podmink",               "odstupné § 67 § 68 § 73a podmínky"),
+    ("odstupne zamestnanec",           "odstupné § 67 § 68"),
+    ("odstupne",                       "odstupné § 67 § 68 § 73a"),
+    ("dovolena delka",                 "dovolená délka § 213 § 215 § 216"),
+    ("dovolena narok",                 "dovolená nárok § 211 § 212"),
+    ("dovolena zakonik",               "dovolená § 211 § 212 § 213 § 214 § 215"),
+    ("dovolena",                       "dovolená § 211 § 212 § 213"),
+    ("nemocenska",                     "nemocenská § 192 § 194 dočasná pracovní neschopnost"),
+    ("prace pres cas",                 "přesčas § 93 § 114"),
+    ("minimalni mzda",                 "minimální mzda § 111"),
+    ("pracovni smlouva nalezitosti",   "pracovní smlouva § 33 § 34 náležitosti"),
+    ("pracovni smlouva",               "pracovní smlouva § 33 § 34 § 36"),
+    ("dohoda o pracovni cinnosti",     "dohoda o pracovní činnosti § 76 § 77"),
+    ("dohoda o provedeni prace",       "dohoda o provedení práce § 75 § 77"),
+    # ── občanský zákoník (89/2012) ─────────────────────────────────────────────
+    ("kupni smlouva obcansky",         "kupní smlouva § 2079 § 2080 § 2085 § 2099"),
+    ("kupni smlouva",                  "kupní smlouva § 2079 § 2080 § 2085"),
+    ("najemni smlouva",                "nájemní smlouva § 2201 § 2202 § 2203"),
+    ("najem bytu",                     "nájem bytu § 2235 § 2236 § 2237"),
+    ("nahrada skody obcansky",         "náhrada škody § 2910 § 2913 § 2914 § 2952"),
+    ("nahrada skody",                  "náhrada škody § 2910 § 2913 § 2914"),
+    ("bezduvodne obohaceni",           "bezdůvodné obohacení § 2991 § 2992 § 2993"),
+    ("smlouva o dilo",                 "smlouva o dílo § 2586 § 2587 § 2591"),
+    ("dedicke rizeni",                 "dědické řízení § 1475 § 1476 § 1670"),
+    ("spolecne jmeni",                 "společné jmění manželů § 708 § 709 § 710"),
+    ("vydrzeni",                       "vydržení § 1089 § 1090"),
+    ("smluvni pokuta",                 "smluvní pokuta § 2048 § 2049 § 2050"),
+    ("zapujcka",                       "zápůjčka § 2390 § 2391 § 2395"),
+    # ── trestní zákoník (40/2009) ──────────────────────────────────────────────
+    ("vrazda trest",                   "vražda § 140 trest odnětí svobody"),
+    ("vrazda",                         "vražda § 140 § 141"),
+    ("kradez trest",                   "krádež § 205 trest"),
+    ("kradez",                         "krádež § 205 § 206"),
+    ("podvod trestni",                 "podvod § 209 § 210 trest"),
+    ("trestni odpovednost",            "trestní odpovědnost § 13 § 15 § 16"),
+    ("podmíneny trest",                "podmíněné odsouzení § 81 § 82 § 83"),
+    ("promlceni trestni",              "promlčení § 34 § 35 trestní"),
+    # ── zákon o obchodních korporacích (90/2012) ───────────────────────────────
+    ("spolecnost s rucenim",           "společnost s ručením omezeným § 132 § 133 § 148"),
+    ("akciova spolecnost",             "akciová společnost § 243 § 244 § 245"),
+    # ── zákon o daních z příjmů (586/1992) ────────────────────────────────────
+    ("dan z prijmu fyzickych",         "daň z příjmů fyzických osob § 2 § 3 § 6"),
+    ("dan z prijmu pravnickych",       "daň z příjmů právnických osob § 17 § 18 § 21"),
+    ("odpisy majetku",                 "odpisy § 26 § 27 § 28 § 29 § 30"),
+]
+
+# Sorted longest-first so more specific triggers win over generic ones.
+_TOPIC_KEYWORD_EXPANSIONS.sort(key=lambda x: -len(x[0]))
+
 
 class CzechQueryAnalyzer:
     """Deterministic query understanding for Czech legal retrieval."""
@@ -172,6 +244,7 @@ class CzechQueryAnalyzer:
             law_refs=law_refs,
         )
         query_mode = self._determine_query_mode(law_refs, paragraphs, detected_domain)
+        expanded_query = self._expand_query(normalized_query, cleaned_query)
         return QueryUnderstanding(
             raw_query=query,
             cleaned_query=cleaned_query,
@@ -182,7 +255,32 @@ class CzechQueryAnalyzer:
             keywords=keywords,
             normalized_tokens=keywords,
             domain_confidence=domain_confidence,
+            expanded_query=expanded_query,
         )
+
+    @staticmethod
+    def _expand_query(normalized_query: str, cleaned_query: str) -> str | None:
+        """
+        Return an expanded query string for sparse (BM25) retrieval, or None if
+        no expansion applies.
+
+        Scans _TOPIC_KEYWORD_EXPANSIONS (sorted longest-first) for the first
+        trigger that is a substring of normalized_query.  The expansion text is
+        appended to cleaned_query so original query tokens still contribute to
+        BM25 scoring.
+        """
+        for trigger, expansion in _TOPIC_KEYWORD_EXPANSIONS:
+            if trigger in normalized_query:
+                expanded = f"{cleaned_query} {expansion}".strip()
+                import logging
+                logging.getLogger(__name__).debug(
+                    "query.expansion trigger=%r original=%r expanded=%r",
+                    trigger,
+                    cleaned_query,
+                    expanded,
+                )
+                return expanded
+        return None
 
     def _detect_law_refs(self, raw_query: str, normalized_query: str) -> list[DetectedLawRef]:
         refs: list[DetectedLawRef] = []
