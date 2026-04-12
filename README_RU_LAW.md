@@ -719,7 +719,116 @@ Strategy orchestration — LangGraph parallel retrieval + synthesis.
 
 ---
 
-## Decisions Log
+## Step Log
+
+---
+
+## Step 0 — Corpus inspection and Milestone 1 design
+
+**Status:** VERIFIED
+
+### Objective
+
+Inspect the actual Russian law files before writing any code to confirm encoding, structure consistency, edge cases, and noise patterns. Produce a concrete, corrected Milestone 1 design that can go directly into implementation.
+
+### Scope
+
+**In scope:**
+- Byte-level inspection of file encoding
+- Structure analysis: hierarchy levels, article numbering, part patterns
+- Edge case enumeration: decimal article numbers, tombstones, noise types
+- Statistical summary across СК, ТК, ГК ч.1
+- Full Milestone 1 design: schemas, parser state machine, chunk strategy, Qdrant setup, test plan, failure gates
+- 4 design corrections requested and applied before approval
+
+**Out of scope:**
+- No code written
+- No branch created
+- No Qdrant collection created
+- No embedding tested against Russian text
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `README_RU_LAW.md` | Created — full corpus inspection findings + Milestone 1 design + 4 corrections |
+
+### Implementation details
+
+**Encoding confirmed**: UTF-16 LE with BOM (`FF FE`). Python `open(path, encoding='utf-16')` handles BOM automatically. Files are not valid UTF-8. PowerShell cannot display Cyrillic from these files — all reading must go through Python.
+
+**Structure confirmed** (consistent across all 3 inspected files):
+
+```
+Раздел → Глава → Статья → numbered parts (1. 2. 3.) → пункты (1) 2)) → подпункты (а) б))
+```
+
+**Статья is the correct primary chunk unit.** Users query by article (`ст. 81 ТК РФ`), not by глава or раздел.
+
+**Edge cases confirmed by direct inspection:**
+- Decimal article numbers (`Статья 19.1.`, `Статья 22.1.`) — 20+ occurrences in ТК РФ alone
+- Tombstone articles (`Статья 7. Утратила силу. - Федеральный закон от 30.06.2006 N 90-ФЗ.`) — confirmed in ТК
+- Tombstones with date (`Статья 175. Утратила силу с 1 сентября 2013 года.`) — confirmed in ТК
+- `Часть вторая утратила силу.` as part-level tombstone within an article
+- КонсультантПлюс editor note always on its own line, followed by note text on next line
+- `Позиции высших судов по ст. N ГК РФ >>>` — UI element injected between articles
+
+**Statistical summary verified:**
+
+| Law | Lines | Статьи | Главы | Разделы | КонсультантПлюс notes |
+|-----|-------|--------|-------|---------|----------------------|
+| СК РФ | 1,488 | 173 | 22 | 8 | 21 |
+| ТК РФ | 6,222 | 538 | 69 | 13 | 53 |
+| ГК РФ ч.1 | 6,046 | 591 | 32 | 3 | 103 |
+
+**4 design corrections applied:**
+
+1. Dense dim: confirmed 384 from `embedding_service.dimension`, `czech_laws_v2` schema, and `embed_documents()` output. Original proposal incorrectly stated 768. `qdrant_writer.py` must read dim from `EmbeddingService` at runtime.
+2. Sparse/BM25 removed from M1. Qdrant collection schema includes sparse slot (avoids rebuild in M2) but all M1 points written with empty sparse vectors. No BM25 encoder in M1.
+3. Fragment ordering made deterministic: `fragment_id = "{law_id}/{article_position:06d}/{chunk_index:04d}"`. `article_position` from explicit `_article_seq` counter incremented only at `flush_article()`. `chunk_index` from `enumerate()` over ordered parts list. No dict traversal.
+4. Noise vs legal-status strictly separated: Pass 1 (9 NOISE_PATTERNS) drops КонсультантПлюс annotations. Pass 2 (TOMBSTONE_RE) runs only on lines that survived Pass 1. `(в ред. ... утратил силу)` in parenthetical annotations is dropped in Pass 1, never reaches tombstone detector.
+
+### Verification
+
+- `docker exec ai-legal-backend python3 -c "open('/tmp/sk.txt', encoding='utf-16')"` → СК РФ readable, Cyrillic renders correctly
+- Article count scan СК: 173 статьи found ✓
+- Article count scan ТК: 538 статьи found ✓
+- Article count scan ГК ч.1: 591 статьи found ✓
+- Decimal article search ТК: 20+ hits for `Статья \d+\.\d+` ✓
+- Tombstone search ТК: `Статья 7. Утратила силу.` confirmed at L222 ✓
+- Tombstone with date ТК: `Статья 175. Утратила силу с 1 сентября 2013 года.` confirmed ✓
+- `embedding_service.dimension` → 384 ✓
+- `embed_documents(["test"])` output length → 384 ✓
+- `czech_laws_v2` Qdrant vector size → 384 ✓
+- КонсультантПлюс note + next-line pattern confirmed in СК ст.15 (L155–L156) ✓
+
+### Failures / issues
+
+- One stale entry in the Decisions Log: `"Dense model: gte-multilingual-base (768 dim)"` — recorded before runtime check, contradicts confirmed 384. Fixed in same commit.
+- GK part 2/3/4 and remaining codices not yet inspected individually. Assumed structure is consistent with ГК ч.1 based on same КонсультантПлюс formatting. Must verify during ingest — parser parse_errors[] will surface any deviation.
+- `Федеральный закон` files in `opeka/` and `cizinec_v_rusku/` subdirectories not inspected. Their law ID mapping is not yet defined. Deferred — not in M1 scope.
+
+### Decision
+
+**Step accepted.**
+
+Corpus structure is confirmed consistent across 3 representative files. All 4 design corrections are locked in. The design is concrete enough to begin implementation without further research.
+
+### Next recommended step
+
+Create branch `feature/russia-law-ingestion`, then implement `modules/russia/ingestion/schemas.py` — the dataclasses (`RussianArticlePart`, `RussianArticle`, `ParseResult`, `RussianChunk`, `IngestReport`) that all subsequent ingestion modules depend on.
+
+### Milestone status
+
+**In progress** — design approved with corrections, no code written yet.
+
+### Design changes
+
+- **Old assumption**: Dense dim = 768 (from memory, `gte-multilingual-base` described as 768-dim in some docs)
+- **New confirmed reality**: Dense dim = 384 (runtime-verified: `embedding_service.dimension`, actual vector output, `czech_laws_v2` Qdrant schema)
+- **Reason**: The project uses the `hash` embedding provider by default which produces 384-dim vectors; `gte-multilingual-base` in full sentence-transformer mode produces 768 but that is not the active provider
+
+---
 
 | Date | Decision | Reason |
 |------|----------|--------|
@@ -731,7 +840,7 @@ Strategy orchestration — LangGraph parallel retrieval + synthesis.
 | 2026-04-12 | Пункты (1) 2) 3)) are NOT split boundaries | Keep related list items together in one chunk |
 | 2026-04-12 | Collection `russian_laws_v1` isolated from `czech_laws_v2` | Hard assert in qdrant_writer before any write |
 | 2026-04-12 | Work in new branch `feature/russia-law-ingestion` | Isolate from main, zero risk to Czech pipeline |
-| 2026-04-12 | Dense model: `gte-multilingual-base` (768 dim) | Already in use, verified multilingual, no new model download |
+| 2026-04-12 | Dense model: active embedding provider, dim=384 at runtime | Confirmed via `embedding_service.dimension`; original assumption of 768 was wrong |
 | 2026-04-12 | No vector search for exact lookup | Pure payload filter + sort by chunk_index is deterministic and faster |
 | 2026-04-12 | Dense dim read from `embedding_service.dimension`, not hardcoded | Confirmed 384 at runtime; hardcoding 768 was wrong |
 | 2026-04-12 | Sparse vectors empty in M1, schema present | Avoids collection rebuild when M2 adds BM25; no BM25 encoder in M1 |
