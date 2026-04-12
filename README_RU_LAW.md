@@ -1058,6 +1058,66 @@ Written atomically (`.tmp` → rename). Key is basename, not full path — check
 
 ---
 
+## Step 5 — exact_lookup.py + retrieval service
+
+**Status:** VERIFIED
+
+### Objective
+
+Implement deterministic exact article lookup against `russian_laws_v1`. No vector search — pure payload filter + sort.
+
+### Scope
+
+**In scope:**
+- `retrieval/schemas.py` — `RussianChunkResult`, `ArticleLookupResult`
+- `retrieval/exact_lookup.py` — `RussianExactLookup.get_article(law_id, article_num, part_num=None)`
+- `retrieval/service.py` — thin `RussianRetrievalService` wrapper (M1 only)
+- `test_exact_lookup.py` — 27 tests
+
+**Out of scope:**
+- Dense / semantic search
+- Topic retrieval
+- BM25 query-time retrieval
+- Ambiguity handling
+- LLM integration
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `backend/app/modules/russia/retrieval/schemas.py` | Created — `RussianChunkResult`, `ArticleLookupResult` |
+| `backend/app/modules/russia/retrieval/exact_lookup.py` | Created — `RussianExactLookup` |
+| `backend/app/modules/russia/retrieval/service.py` | Created — `RussianRetrievalService` (exact lookup only) |
+| `backend/tests/russia/test_exact_lookup.py` | Created — 27 tests |
+
+### Implementation details
+
+**Retrieval strategy:** Qdrant scroll with payload filter (`law_id` + `article_num` + optional `part_num`), then sort results by `chunk_index` ASC in Python. No vector search, no embedding call at query time.
+
+**Tombstone handling:** Tombstone articles are returned normally with `is_tombstone=True` and `source_type='tombstone'` — the caller decides how to present the repeal notice.
+
+**No-hit contract:** Missing articles always return `ArticleLookupResult(hit=False, chunks=[], ...)` — never raise.
+
+**Decimal article numbers:** Stored as strings in Qdrant (`"19.1"`), matched exactly via `MatchValue`. No float parsing needed.
+
+**Test coverage:**
+- ст.81 ТК РФ — active, correct heading, non-tombstone
+- ст.1 СК РФ — active, correct heading  
+- ст.169 ГК РФ ч.1 — active, has text
+- ст.7 ТК РФ — tombstone flagged, source_type='tombstone', has text
+- ст.9999 ТК РФ — nonexistent → no-hit, law_id preserved
+- local:ru/uk ст.1 — unindexed law → no-hit
+- Cross-law isolation — TK chunks not returned for SK query
+- Ordering determinism — two identical calls return same chunk order
+- chunk_index ascending with no gaps
+- Optional part_num filter
+- Decimal article ст.19.1 found
+- Service wrapper matches direct lookup
+
+**Test results:** 27/27 pass. Total Russia tests: 106/106.
+
+---
+
 | Date | Decision | Reason |
 |------|----------|--------|
 | 2026-04-12 | UTF-16 LE encoding confirmed for all files | Direct byte inspection + Python read test |
