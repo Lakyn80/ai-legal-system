@@ -14,8 +14,9 @@ All milestones, corpus findings, design decisions, approved specs, and implement
 | Working directory | `backend/app/modules/russia/` |
 | Corpus directory | `Ruske_zakony/` |
 | Primary collection | `russian_laws_v1` (Qdrant) |
-| IDF checkpoint | `backend/storage/idf_russian_laws_v1.json` |
-| Status | **Milestone 1 — awaiting coding approval** |
+| IDF checkpoint | `backend/storage/idf_russian_laws_v1.json` (Milestone 2) |
+| Dense dim | 384 (read from `embedding_service.dimension` at runtime) |
+| Status | **Milestone 1 — approved with 4 corrections, ready to code** |
 
 ---
 
@@ -262,15 +263,28 @@ STATYA_RE = re.compile(r'^Статья\s+(\d+(?:\.\d+)?)\.?\s*(.*)', re.UNICODE)
 # Group 2: article heading (may be empty or "Утратила силу...")
 ```
 
-**Noise filter** — applied to each accumulated line before storing:
+**Two-pass line processing — Correction 4 applied**
 
-Applied in order, line is discarded if ANY of these match:
+Lines in article body are processed in strict order:
+
+```
+line → PASS 1: noise_filter() → if dropped: discard
+              → if kept: PASS 2: tombstone_detector() → set flag if matched
+              → accumulate
+```
+
+This guarantees that `(в ред. ... утратил силу ...)` inside a parenthetical annotation is dropped in Pass 1 and never reaches the tombstone detector.
+
+**Pass 1 — Editor-only noise: DROP unconditionally**
+
+All КонсультантПлюс editorial annotations. Zero legal content. Safe to remove.
 
 ```python
+# Category A — editor noise patterns (all parenthetical change-tracking or distributor metadata)
 NOISE_PATTERNS = [
     re.compile(r'^\(в\s+ред\.', re.UNICODE | re.IGNORECASE),
     re.compile(r'^\(п\.\s+[\d.]+\s+в\s+ред\.', re.UNICODE | re.IGNORECASE),
-    re.compile(r'^\(пп\.\s+"[а-я]"\s+в\s+ред\.', re.UNICODE | re.IGNORECASE),
+    re.compile(r'^\(пп\.\s+"[а-яёА-ЯЁ]"\s+в\s+ред\.', re.UNICODE | re.IGNORECASE),
     re.compile(r'^\(часть\s+\w+\s+(введена|в\s+ред)\.', re.UNICODE | re.IGNORECASE),
     re.compile(r'^\(введен\w*\s+Федеральным', re.UNICODE | re.IGNORECASE),
     re.compile(r'^КонсультантПлюс:\s+примечание', re.UNICODE | re.IGNORECASE),
@@ -281,15 +295,22 @@ NOISE_PATTERNS = [
 ]
 ```
 
-Special case — `КонсультантПлюс: примечание.` is followed by an editor note on the NEXT line that must also be discarded. Implement with a `skip_next_line: bool` flag in the accumulation loop.
+Special case: `КонсультантПлюс: примечание.` is always followed by an editorial note on the NEXT line. Implement with a `_skip_next: bool` flag in the accumulation loop — set to `True` when the `примечание` pattern matches, and clear after the next line is discarded.
 
-**Tombstone detection**:
+**Pass 2 — Legally meaningful status: PRESERVE as tombstone**
+
+These are part of the official text of the law. Applied only to lines that survived Pass 1.
 
 ```python
+# Category B — legal status content (official text, not editor annotation)
 TOMBSTONE_RE = re.compile(r'[Уу]тратил[аи]?\s+силу', re.UNICODE)
 ```
 
-If article heading or first content line matches `TOMBSTONE_RE` → set `is_tombstone=True` on the article. Still include in parse output, still write to Qdrant (as tombstone chunk), but mark `source_type="tombstone"`.
+Applied to:
+- article heading (the text extracted from `STATYA_RE` group 2)
+- any line accumulated into article body
+
+If matched → `article.is_tombstone = True`. The article is still fully included in parse output and written to Qdrant with `source_type="tombstone"`. Never silently discarded.
 
 #### Part splitting
 
@@ -379,15 +400,15 @@ class RussianChunk:
     razdel: str | None
     glava: str
     text: str                  # chunk text
-    chunk_index: int           # 0-based position within article
-    fragment_id: str           # law_id + "/" + zero-padded sequential position (for sort)
+    chunk_index: int           # 0-based position within article (== part_position in M1)
+    fragment_id: str           # "{law_id}/{article_position:06d}/{chunk_index:04d}" — lexsortable
     source_type: str           # "law_article" or "tombstone"
     source_file: str
     ingest_timestamp: str
     is_tombstone: bool
 ```
 
-**Chunk ID derivation**:
+**Chunk ID derivation** (deterministic, Correction 3 applied):
 
 ```python
 chunk_id = str(uuid.uuid5(
@@ -397,6 +418,34 @@ chunk_id = str(uuid.uuid5(
 ```
 
 Same strategy as Czech pipeline — deterministic, idempotent on re-ingest.
+
+**fragment_id and chunk_index derivation** (Correction 3 — explicit counter rule):
+
+```
+article_position  assigned by parser's _article_seq counter
+                  incremented only at flush_article() call, strictly sequential
+                  source order = file order = deterministic
+
+part_position     assigned by enumerate() over parts list in _split_parts()
+                  parts list is built top-to-bottom as lines appear in file
+                  0 = intro/unnumbered text before first "1."
+                  1 = first numbered part "1."
+                  2 = second numbered part "2.", etc.
+
+chunk_index       == part_position in Milestone 1 (one chunk per part)
+                  If future milestones further split a part, chunk_index
+                  increments within the part; part_position stays fixed.
+
+fragment_id       = f"{law_id}/{article_position:06d}/{chunk_index:04d}"
+                  Example: "local:ru/tk/000080/0000"
+                  Zero-padded so lexicographic sort == numeric sort
+                  Sorting by fragment_id ASC gives correct display order
+```
+
+**Ordering guarantee**: Re-ingest of the same file always produces the same `fragment_id` and `chunk_index` because:
+- file is read sequentially (no parallel parsing)
+- `_article_seq` is incremented only at explicit flush points
+- `_split_parts()` uses `enumerate()` over an ordered list — no dict traversal
 
 #### `IngestReport`
 
@@ -420,14 +469,26 @@ class IngestReport:
 #### Collection: `russian_laws_v1`
 
 ```python
-# Vector config — identical to czech_laws_v2 pattern
+# Vector config — Correction 1: dim derived from runtime, not hardcoded
+# qdrant_writer receives embedding_service as dependency
+dim = embedding_service.dimension  # 384 as of current config; will adapt if provider changes
+
 vectors_config = {
-    "dense": VectorParams(size=768, distance=Distance.COSINE),
+    "dense": VectorParams(size=dim, distance=Distance.COSINE),
     "sparse": SparseVectorParams(index=SparseIndexParams(on_disk=False)),
+    # sparse vectors written as empty lists in M1 — schema ready for M2 BM25
+    # no collection rebuild needed when M2 adds sparse population
 }
 ```
 
-Dense dim: 768 — `Alibaba-NLP/gte-multilingual-base` (same model, works for Russian, verified multilingual).
+**Dense dim — runtime verified**: `embedding_service.dimension = 384`, confirmed by:
+- `profile.dimension = 384`
+- actual `embed_documents(["test"])` output: `len(vector) = 384`
+- `czech_laws_v2` collection: `vector=dense: size=384`
+
+The Qdrant writer must accept `embedding_service: EmbeddingService` as a parameter and read `.dimension` from it. Hard-coding `768` or any other value is not permitted.
+
+**Sparse in M1 — Correction 2**: Collection schema includes the `sparse` vector config so that M2 (BM25) does not require a collection rebuild or re-ingest. Points are upserted with empty sparse vectors in M1. `qdrant_writer.py` must not import or construct any BM25 encoder in M1.
 
 #### Payload index (create at collection init)
 
@@ -672,3 +733,8 @@ Strategy orchestration — LangGraph parallel retrieval + synthesis.
 | 2026-04-12 | Work in new branch `feature/russia-law-ingestion` | Isolate from main, zero risk to Czech pipeline |
 | 2026-04-12 | Dense model: `gte-multilingual-base` (768 dim) | Already in use, verified multilingual, no new model download |
 | 2026-04-12 | No vector search for exact lookup | Pure payload filter + sort by chunk_index is deterministic and faster |
+| 2026-04-12 | Dense dim read from `embedding_service.dimension`, not hardcoded | Confirmed 384 at runtime; hardcoding 768 was wrong |
+| 2026-04-12 | Sparse vectors empty in M1, schema present | Avoids collection rebuild when M2 adds BM25; no BM25 encoder in M1 |
+| 2026-04-12 | fragment_id = law_id/article_position:06d/chunk_index:04d | Lexsortable, derived from explicit sequential counters only |
+| 2026-04-12 | Noise filter (Pass 1) runs before tombstone detector (Pass 2) | Prevents `(в ред. ... утратил силу)` annotation from triggering tombstone flag |
+| 2026-04-12 | Editor noise and legal-status content are strictly separate categories | Drop: КонсультантПлюс annotations. Preserve: Утратила силу in official text |
