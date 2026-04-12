@@ -820,13 +820,64 @@ Create branch `feature/russia-law-ingestion`, then implement `modules/russia/ing
 
 ### Milestone status
 
-**In progress** — design approved with corrections, no code written yet.
+**In progress** — Step 1 complete (schemas + loader + parser, 29/29 tests passing).
 
 ### Design changes
 
 - **Old assumption**: Dense dim = 768 (from memory, `gte-multilingual-base` described as 768-dim in some docs)
 - **New confirmed reality**: Dense dim = 384 (runtime-verified: `embedding_service.dimension`, actual vector output, `czech_laws_v2` Qdrant schema)
 - **Reason**: The project uses the `hash` embedding provider by default which produces 384-dim vectors; `gte-multilingual-base` in full sentence-transformer mode produces 768 but that is not the active provider
+
+---
+
+## Step 1 — schemas.py + loader.py + parser.py
+
+**Status:** VERIFIED
+
+### Objective
+
+Implement the three foundational ingestion modules that convert raw KonsultantPlus UTF-16 files into structured `ParseResult` objects ready for the chunk builder.
+
+### Scope
+
+**In scope:**
+- `schemas.py` — `LawMetadata`, `RussianArticlePart`, `RussianArticle`, `ParseResult` dataclasses
+- `loader.py` — UTF-16 LE file reader, law_id derivation from filename, header metadata extraction
+- `parser.py` — state-machine parser (HEADER→IN_SECTION→IN_CHAPTER→IN_ARTICLE), Pass 1 noise filter, Pass 2 tombstone detector, part splitter
+- `tests/russia/test_parser.py` — 29 tests covering counts, headings, decimal articles, tombstones, noise removal, part splitting, ordering, metadata
+
+**Out of scope:**
+- chunk_builder.py (Step 2)
+- embedder.py, qdrant_writer.py (Step 3)
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `backend/app/modules/russia/ingestion/schemas.py` | Created — parsing dataclasses |
+| `backend/app/modules/russia/ingestion/loader.py` | Created — UTF-16 loader + law_id map |
+| `backend/app/modules/russia/ingestion/parser.py` | Created — state-machine parser |
+| `backend/tests/russia/test_parser.py` | Created — 29 parser tests |
+
+### Implementation details
+
+**Three bugs found and fixed during test run:**
+
+1. **Empty tombstone text** — Articles like ст.7 ТК РФ declare repeal only in the heading line (`Статья 7. Утратила силу. - ...`), leaving `raw_text=""`. Fixed: when `is_tombstone=True` and `raw_text` is empty, use `heading` as the chunk content so Qdrant always receives non-empty text.
+
+2. **False tombstone on пункт list items** — ст.81 ТК РФ contains `12) утратил силу.` inside a `1) 2) 3)` пункт list. Pass 2 was incorrectly flagging the entire article as tombstone. Fixed: skip tombstone detection when line matches `^\d+(?:\.\d+)?\)` (пункт format).
+
+3. **Wrong article for split test** — ТК РФ uses `1) 2) 3)` пункты throughout (no `1. 2. 3.` части format). Test updated to use ГК РФ ч.1 which has 445+ articles with части format.
+
+**Article counts verified:**
+
+| Law | Expected | Got |
+|-----|----------|-----|
+| СК РФ | ~173 | 173 |
+| ТК РФ | ~538 | 538 |
+| ГК РФ ч.1 | ~591 | 591 |
+
+**Test results:** 29/29 pass.
 
 ---
 
