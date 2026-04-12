@@ -98,7 +98,44 @@ Bare paragraph queries like `§52` without a law name return a structured clarif
 - Confidence gate: token overlap ratio instead of any-token-in-text (blocks proper noun false positives)
 - High-confidence domain search: hard `law_filter = preferred_law_iris` when `domain_confidence ≥ 0.9`
 - Removed `"narok"`/`"naroku"` from `_STRATEGY_KEYWORDS` — "nárok" is a basic Czech legal term, not a strategy indicator; queries like "zaměstnanec nárok na odstupné" now correctly route to law retrieval
-- Index-line structural penalty: numbered derogation-schedule entries (`"1. zákon č. ..."`, `"16. nařízení vlády č. ..."`) get −0.45 penalty in `CzechLawReranker` — runs unconditionally, covers all laws with preamble derogation lists
+- Index-line structural penalty: numbered derogation-schedule entries (`"1. zákon č. ..."`, `"16. nařízení vlády č. ..."`) get −0.55 penalty in `CzechLawReranker` — runs unconditionally, covers all laws with preamble derogation lists; extended regex also catches `"N. Část první zákona č. Y/Z Sb."` entries
+- **Exact lookup sort fix**: `paragraph=N` payload in Qdrant is a context inheritance tag (set by sequential scan), not an ownership tag — all fragments between §(N-1) and §N get `paragraph=N`. Fixed in `dense_retriever.py`: collect up to `_OVERSCAN=1024` candidates before sorting (heading chunk was at scroll position ~30, missed by the old `limit=15` early break); use `fragment_id` numeric suffix to detect pre-heading inherited chunks and relegate them; heading chunk is always position 0
+- **LLM grounding fix**: `is_substantive()` min-length 55→30 chars so clause sub-items like `"a) ruší-li se zaměstnavatel..."` (43 chars) are included in the LLM context; added `-li` verb suffix detection; `max_chunks` 3→5 in `build_search_explanation_prompt`
+
+#### Topic Query Improvements
+
+Queries without an explicit paragraph number (e.g. `"výpověď zákoník práce"`, `"kupní smlouva občanský zákoník"`) now retrieve substantive sections instead of derogation index lines.
+
+**Query expansion**
+
+`query_analyzer.py` contains `_TOPIC_KEYWORD_EXPANSIONS` — 50 entries mapping normalized trigger phrases to a string of paragraph hints appended to the BM25 query. Examples:
+
+| Trigger | Appended hint |
+|---------|--------------|
+| `výpověď zákoník práce` | `výpověď § 50 § 52 § 53` |
+| `odstupné zákoník práce` | `odstupné § 67 § 68 § 73a` |
+| `dovolená zákoník práce` | `dovolená § 211 § 212 § 213 § 214 § 215` |
+| `kupní smlouva občanský zákoník` | `kupní smlouva § 2079 § 2080 § 2085 § 2099` |
+| `vražda trestní zákoník` | `vražda § 140 trest odnětí svobody` |
+
+`QueryUnderstanding` carries an `expanded_query` field. The service passes `expanded_query` to the sparse retriever only (BM25 benefits from paragraph hints; dense embedding quality degrades with appended noise).
+
+**Reranker improvements**
+
+- `_topic_heading_boost` (+0.18): boosts named legal-institute headings (`"Dovolená"`, `"Odstupné"`) that overlap with query tokens — only in `law_constrained_search` / `domain_search` modes and only when the chunk belongs to the target law
+- `_PURE_REFERENCE_PENALTY` (−0.25): penalises fragments consisting only of cross-references (`"§ 52 odst. 2 a § 54"`) with no normative content
+- `diversify_by_paragraph()`: caps 2 chunks per `(law_iri, paragraph)` group, ensuring results span multiple sections rather than all coming from a single paragraph
+
+**Retrieval planner — topic mode**
+
+When `law_constrained_search` fires without an explicit paragraph (`is_topic=True`):
+- `candidate_k=120` (wider pre-rerank pool)
+- `structural_window=2` (more neighboring chunks collected)
+- `text_overlap_weight=0.32` (query keywords in chunk text weighted more heavily)
+
+**Additional overlap gate for domain_search**
+
+Filters out results where `mode=constrained`, domain is known, no paragraph filter, and no result reaches `overlap_ratio ≥ 0.3` — prevents keyword-matched but content-empty derogation lines from reaching the LLM.
 
 #### Cross-Encoder Reranker
 
@@ -110,16 +147,18 @@ A modular cross-encoder reranker stack was added as a common abstraction under `
 |------|---------|
 | `backend/app/modules/common/reranker/provider.py` | `BaseRerankerProvider` ABC — `score(query, documents) → list[float]` |
 | `backend/app/modules/common/reranker/providers/bge.py` | `BGERerankerProvider` — `BAAI/bge-reranker-base` (~280 MB), lazy singleton, thread-safe, `_init_failed` guard |
-| `backend/app/modules/common/reranker/service.py` | `rerank()` — reorder results by cross-encoder score, fail-open, 300 ms timeout via `ThreadPoolExecutor`; `score_with_fallback()` — returns raw scores for domain-specific post-processing |
-| `backend/app/modules/czechia/retrieval/cross_encoder_reranker.py` | Czech-law shim: delegates to `common.reranker.service.score_with_fallback()`, applies Czech heading penalty (−0.35) and index-line penalty (−0.50) before final sort |
+| `backend/app/modules/common/reranker/service.py` | `rerank()` — reorder results by cross-encoder score, fail-open, 1200 ms timeout via `ThreadPoolExecutor`; `score_with_fallback()` — returns raw scores for domain-specific post-processing |
+| `backend/app/modules/common/relevance/reranker.py` | `warmup_reranker()` — fires background thread at startup to pre-load BGE model; called from `app.main` `startup` event |
+| `backend/app/modules/czechia/retrieval/cross_encoder_reranker.py` | Czech-law shim: delegates to `common.reranker.service.score_with_fallback()`, applies Czech heading penalty (−0.40) and index-line penalty (−0.55) before final sort |
 
 **Design decisions**
 
 - Text truncated to 768 chars before scoring (keeps latency predictable on CPU)
 - Original `result.score` is NOT overwritten — cross-encoder only reorders
-- Timeout fail-open: if BGE model is still loading or exceeds 300 ms, original RRF order is preserved
+- Timeout fail-open: if BGE model exceeds 1200 ms (raised from 300 ms), original RRF order is preserved
+- BGE pre-loaded at startup in a background thread (`warmup_reranker()`) — eliminates ~5-second cold-start timeout on first topic query
 - BGE not applied on `exact` mode (paragraph lookup) — order there is structurally determined
-- Index-line penalty also lives in `CzechLawReranker` (runs unconditionally) so it fires even when BGE has not loaded yet
+- Index-line penalty also lives in `CzechLawReranker` (runs unconditionally) so it fires even when BGE has not yet finished loading
 
 #### Batch Search Endpoint
 
@@ -185,10 +224,15 @@ Sample verified query results:
 
 | Query | Result |
 |-------|--------|
-| `§ 52 zákoník práce` | exact hit → 262/2006 Sb., score 3.0 |
+| `§ 52 zákoník práce` | exact hit → 262/2006 Sb., heading at pos 0, clause list at pos 1-4 |
 | `§ 209 trestní zákoník` | exact hit → 40/2009 Sb. |
 | `§ 2910 občanský zákoník` | exact hit → 89/2012 Sb. |
 | `výpovědní doba zákoník práce` | constrained → 262/2006 Sb. |
+| `výpověď zákoník práce` | constrained + expanded → §52 heading + reasons returned |
+| `dovolená zákoník práce délka` | constrained + expanded → §211-215 returned |
+| `kupní smlouva občanský zákoník` | constrained + expanded → §2079-2099 returned |
+| `trestní zákoník vražda trest` | constrained + expanded → "Vražda" heading + §140 returned |
+| `odstupné zákoník práce podmínky` | constrained + expanded → §67-68 returned |
 | `jak se počítá dovolená` | domain search → 262/2006 Sb. |
 | `zkušební doba délka` | domain search → 262/2006 Sb. |
 | `§ 52` | clarification response |
@@ -229,15 +273,13 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 
 2. **Score summary fix** — `decision.score_summary` always shows zeros for Czech path (Czech retrieval bypasses the `RetrievalFeatureSet` pipeline). Needs a bridge in `CzechLawRetrievalAdapter`.
 
-3. **BGE warm-up on startup** — the cross-encoder model is lazy-loaded on first call; first query after restart falls back to RRF order. A startup warm-up request would eliminate this cold-start penalty.
+3. **Prometheus / OpenTelemetry** — export cache and retrieval metrics in machine-readable format.
 
-4. **Prometheus / OpenTelemetry** — export cache and retrieval metrics in machine-readable format.
+4. **Scoped cache invalidation** — invalidate by `jurisdiction + domain` without clearing everything.
 
-5. **Scoped cache invalidation** — invalidate by `jurisdiction + domain` without clearing everything.
+5. **End-to-end CI test** — compose-backed smoke test in GitHub Actions hitting the live API.
 
-6. **End-to-end CI test** — compose-backed smoke test in GitHub Actions hitting the live API.
-
-7. **Russia jurisdiction** — scaffold only, retrieval pipeline not built yet.
+6. **Russia jurisdiction** — scaffold only, retrieval pipeline not built yet.
 
 ---
 
@@ -278,6 +320,7 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 ├── .env.example
 ├── docker-compose.yml
 ├── test_queries.ps1             ← 50-query PowerShell live test (POST /api/search/answer)
+├── test_topic_smoke.py          ← diagnostic: expansion check + sparse with expansion + penalty check
 ├── backend
 │   ├── .env.example
 │   ├── Dockerfile
@@ -301,13 +344,14 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 │   │       │   │   └── classifier.py        ← QueryType routing (_STRATEGY_KEYWORDS tuned)
 │   │       │   ├── reranker/                ← cross-encoder abstraction
 │   │       │   │   ├── provider.py          ← BaseRerankerProvider ABC
-│   │       │   │   ├── service.py           ← rerank() + score_with_fallback(), 300 ms timeout
+│   │       │   │   ├── service.py           ← rerank() + score_with_fallback(), 1200 ms timeout
 │   │       │   │   └── providers/bge.py     ← BAAI/bge-reranker-base lazy singleton
 │   │       │   ├── reasoning/               ← confidence gate
 │   │       │   ├── responses/               ← SearchAnswerResponse, BatchSearchAnswerResponse
 │   │       │   ├── cache/                   ← exact + semantic Redis cache
 │   │       │   ├── observability/           ← metrics, logging
 │   │       │   ├── relevance/               ← filter.py (score + system tag passthrough)
+│   │       │   │   └── reranker.py          ← warmup_reranker() — pre-loads BGE at startup
 │   │       │   └── qdrant/                  ← generic retrieval service
 │   │       └── czechia/
 │   │           ├── retrieval/
