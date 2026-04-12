@@ -987,6 +987,77 @@ Dimension is never hardcoded — `embedder.dimension` reads from `EmbeddingServi
 
 ---
 
+## Step 4 — service.py + cli.py
+
+**Status:** VERIFIED
+
+### Objective
+
+Wire the full ingestion pipeline into a callable orchestrator. Add file-level checkpoint support and a CLI for manual corpus runs.
+
+### Scope
+
+**In scope:**
+- `service.py` — `ingest_law_file()`, `ingest_corpus()`, `FileIngestResult`, `IngestReport`
+- `cli.py` — `--file` and `--corpus` modes, `--checkpoint`, `--no-checkpoint`, `--quiet`
+- `test_service.py` — 16 orchestration tests
+
+**Out of scope:**
+- Retrieval (Step 5)
+- Celery / background tasks
+- Prometheus metrics
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `backend/app/modules/russia/ingestion/service.py` | Created — orchestrator with checkpoint |
+| `backend/app/modules/russia/ingestion/cli.py` | Created — `--file` / `--corpus` CLI |
+| `backend/tests/russia/test_service.py` | Created — 16 orchestration tests |
+
+### Implementation details
+
+**Runtime embedding profile (recorded at Step 4):**
+
+```
+provider  = hash
+model     = deterministic-hash-384
+dim       = 384
+revision  = deterministic_hash_v2
+```
+
+**Checkpoint format:**
+```json
+{
+  "version": 1,
+  "files": {
+    "filename.txt": {
+      "law_id": "local:ru/tk",
+      "law_short": "ТК РФ",
+      "chunks": 538,
+      "ingested_at": "2026-04-12T..."
+    }
+  }
+}
+```
+Written atomically (`.tmp` → rename). Key is basename, not full path — checkpoint is portable if the corpus is moved.
+
+**File discovery order:** sorted by derived `law_id` — deterministic regardless of filesystem ordering.
+
+**Unrecognized files:** law files whose filename does not match `_LAW_ID_MAP` (law_id starts with `local:ru/unknown/`) are counted in `IngestReport.files_unrecognized` and never checkpointed.
+
+**Milestone corpus counts (all three laws):**
+
+| Law | law_id | Articles | Tombstones | Chunks |
+|-----|--------|----------|------------|--------|
+| ГК РФ ч.1 | local:ru/gk/1 | 591 | ~11 | >591 |
+| СК РФ | local:ru/sk | 173 | 0 | 173 |
+| ТК РФ | local:ru/tk | 538 | 37 | 538 |
+
+**Test results:** 16/16 pass. Total Russia tests: 79/79.
+
+---
+
 | Date | Decision | Reason |
 |------|----------|--------|
 | 2026-04-12 | UTF-16 LE encoding confirmed for all files | Direct byte inspection + Python read test |
