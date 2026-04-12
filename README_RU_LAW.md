@@ -1118,6 +1118,58 @@ Implement deterministic exact article lookup against `russian_laws_v1`. No vecto
 
 ---
 
+## Step 6 — dense_retriever.py + service.py extension
+
+**Status:** VERIFIED
+
+### Objective
+
+Implement semantic dense vector search against `russian_laws_v1`. Extend `RussianRetrievalService` with a `search()` method. Add `RussianSearchResult` schema.
+
+### Scope
+
+**In scope:**
+- `retrieval/schemas.py` — `RussianSearchResult` dataclass added
+- `retrieval/dense_retriever.py` — `RussianDenseRetriever.search(query, law_id, top_k)`
+- `retrieval/service.py` — `search()` method added; constructor now takes `embedding_service`
+- `test_dense_retriever.py` — 20 tests
+- `test_exact_lookup.py` — service fixture updated for new constructor signature
+
+**Out of scope:**
+- BM25 query-time retrieval
+- Query expansion / reranking
+- Topic taxonomy
+- Ambiguity handling
+- LLM integration
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `backend/app/modules/russia/retrieval/schemas.py` | `RussianSearchResult` added |
+| `backend/app/modules/russia/retrieval/dense_retriever.py` | Created — `RussianDenseRetriever` |
+| `backend/app/modules/russia/retrieval/service.py` | `search()` added; constructor requires `embedding_service` |
+| `backend/tests/russia/test_dense_retriever.py` | Created — 20 tests |
+| `backend/tests/russia/test_exact_lookup.py` | Service fixture updated for new constructor |
+
+### Implementation details
+
+**Retrieval path:** `embed_query(query)` → `query_points(using="dense", query_filter=law_filter)` → sort by score (Qdrant returns descending by default) → map to `RussianSearchResult`.
+
+**law_id filter:** Optional `MatchValue` filter on the `law_id` payload field. When `None`, all 2,508 ingested chunks are candidates.
+
+**No LLM:** Verified structurally — `dense_retriever.py` imports only `EmbeddingService`, `QdrantClient`, and local schemas. Test `test_dense_search_does_not_import_llm` confirms this.
+
+**Tombstone preservation:** `is_tombstone` and `source_type` are read directly from the Qdrant payload — tombstone chunks surface normally in search results with correct flags.
+
+**Constructor change in service.py:** `RussianRetrievalService` now requires `embedding_service` as first argument (needed for dense search). Existing `test_exact_lookup.py` service fixture was updated accordingly.
+
+**Test note:** `test_qdrant_writer` and `test_service` delete `russian_laws_v1` in their teardown. Dense retrieval tests require the collection to be pre-populated — run the M1 corpus ingest before running these tests in isolation.
+
+**Test results:** 20/20 dense tests + 27/27 exact lookup tests = 47/47 pass.
+
+---
+
 | Date | Decision | Reason |
 |------|----------|--------|
 | 2026-04-12 | UTF-16 LE encoding confirmed for all files | Direct byte inspection + Python read test |

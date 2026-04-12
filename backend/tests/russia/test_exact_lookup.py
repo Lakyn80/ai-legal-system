@@ -63,7 +63,15 @@ def lookup() -> RussianExactLookup:
 
 @pytest.fixture(scope="session")
 def service() -> RussianRetrievalService:
-    return RussianRetrievalService(qdrant_url=QDRANT_URL)
+    from app.core.config import get_settings
+    from app.modules.common.embeddings.provider import EmbeddingService
+    s = get_settings()
+    emb = EmbeddingService(
+        model_name=s.embedding_model,
+        provider_name=s.embedding_provider,
+        hash_dimension=s.embedding_hash_dimension,
+    )
+    return RussianRetrievalService(embedding_service=emb, qdrant_url=QDRANT_URL)
 
 
 # ---------------------------------------------------------------------------

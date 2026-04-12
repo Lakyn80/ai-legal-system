@@ -1,11 +1,10 @@
 """
-Retrieval result schemas for Russian law exact lookup.
+Retrieval result schemas for Russian law retrieval.
 
-These dataclasses represent the output of exact_lookup.py and are the only
-retrieval schemas needed for Milestone 1 (exact lookup only).
+Step 5: RussianChunkResult, ArticleLookupResult  (exact lookup)
+Step 6: RussianSearchResult                       (dense search)
 
-Dense search, topic retrieval, and BM25 query-time schemas are out of scope
-for this step.
+BM25 query-time schemas and topic-retrieval schemas are out of scope for M1.
 """
 from __future__ import annotations
 
@@ -109,3 +108,32 @@ class ArticleLookupResult:
     def part_count(self) -> int:
         """Number of chunks (parts) in this article."""
         return len(self.chunks)
+
+
+@dataclass
+class RussianSearchResult:
+    """
+    A single chunk returned by dense vector search, with a similarity score.
+
+    Produced by RussianDenseRetriever and returned in score-descending order.
+    All fields mirror the Qdrant payload; score is the cosine similarity from
+    the vector query.
+    """
+
+    score: float
+    """Cosine similarity score from Qdrant, range [0, 1] for normalised vectors."""
+
+    chunk_id: str
+    law_id: str
+    law_short: str
+    article_num: str
+    article_heading: str
+    part_num: int | None
+    chunk_index: int
+    razdel: str | None
+    glava: str
+    text: str
+    fragment_id: str
+    source_type: str
+    is_tombstone: bool
+    source_file: str
