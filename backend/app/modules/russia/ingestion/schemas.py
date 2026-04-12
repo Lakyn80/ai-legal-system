@@ -160,3 +160,65 @@ class ParseResult:
 
     parse_errors: list[str]
     """Law-level parse warnings (not article-specific)."""
+
+
+@dataclass
+class RussianChunk:
+    """
+    A single retrieval-ready chunk produced by chunk_builder.
+
+    One chunk = one RussianArticlePart. For short articles and tombstones this
+    means one chunk per article. For long articles with numbered части this means
+    one chunk per detected part plus an optional intro chunk.
+
+    chunk_id is a deterministic UUID5 derived from fragment_id so that re-ingesting
+    the same corpus produces byte-identical IDs. Qdrant uses chunk_id as the point ID.
+    """
+
+    chunk_id: str
+    """UUID5 derived from fragment_id. Stable across reruns."""
+
+    law_id: str
+    """Canonical IRI, e.g. 'local:ru/tk'. Inherited from LawMetadata."""
+
+    law_title: str
+    """Full official title. Inherited from LawMetadata."""
+
+    law_short: str
+    """Common abbreviation, e.g. 'ТК РФ'. Inherited from LawMetadata."""
+
+    article_num: str
+    """Article number as string, e.g. '81', '19.1'."""
+
+    article_heading: str
+    """Article heading text. May contain repeal declaration for tombstones."""
+
+    part_num: int | None
+    """Numeric label of this part (1, 2, 3 ...). None for intro or single-part articles."""
+
+    razdel: str | None
+    """Раздел label at parse time. None if law has no Раздел hierarchy."""
+
+    glava: str
+    """Глава label at parse time. Empty string if no Глава has been seen."""
+
+    text: str
+    """Clean chunk text. Never empty."""
+
+    chunk_index: int
+    """0-based index of this chunk within its article. Used in fragment_id."""
+
+    fragment_id: str
+    """
+    Lexsortable source-order ID: '{law_id}/{article_position:06d}/{chunk_index:04d}'.
+    Determines chunk_id via UUID5 and preserves file order for pagination.
+    """
+
+    source_type: str
+    """'article' or 'tombstone'. Tombstone chunks must remain retrievable."""
+
+    source_file: str
+    """Basename of the source file. Inherited from RussianArticle."""
+
+    is_tombstone: bool
+    """True when the originating article was repealed."""

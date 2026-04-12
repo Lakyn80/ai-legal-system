@@ -881,6 +881,60 @@ Implement the three foundational ingestion modules that convert raw KonsultantPl
 
 ---
 
+## Step 2 — chunk_builder.py
+
+**Status:** VERIFIED
+
+### Objective
+
+Convert `ParseResult` objects from the parser into flat, ordered lists of `RussianChunk` objects ready for embedding and Qdrant ingestion. Establish deterministic chunk IDs.
+
+### Scope
+
+**In scope:**
+- `RussianChunk` dataclass added to `schemas.py`
+- `chunk_builder.py` — `build_chunks(result: ParseResult) -> list[RussianChunk]`
+- `test_chunk_builder.py` — 23 tests
+
+**Out of scope:**
+- Embedding (Step 3)
+- Qdrant writer (Step 3)
+- BM25 / sparse vectors (Milestone 2)
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `backend/app/modules/russia/ingestion/schemas.py` | Added `RussianChunk` dataclass |
+| `backend/app/modules/russia/ingestion/chunk_builder.py` | Created — `build_chunks()` function |
+| `backend/tests/russia/test_chunk_builder.py` | Created — 23 tests |
+
+### Implementation details
+
+**Design decisions locked during implementation:**
+
+- `chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, fragment_id))` — fully deterministic, reruns produce identical UUIDs.
+- `fragment_id = '{law_id}/{article_position:06d}/{chunk_index:04d}'` — lexsortable, encodes both article order and part order within article.
+- `source_type = 'tombstone' | 'article'` — tombstone chunks remain retrievable, never discarded.
+- Empty text assertion in `build_chunks()` — catches any future parser regression that produces empty parts immediately at build time.
+
+**Bug found and fixed during test run:**
+
+- **Fragment ID regex in test** — law_id `local:ru/gk/1` contains slashes; regex `^[^/]+/...` failed. Fixed to `^.+/\d{6}/\d{4}$`.
+- **Multi-part grouping by article_num** — ст.123.7 appeared twice in ГК РФ ч.1 (GK1 genuinely has duplicate decimal article numbers from different amendments). Fixed: group by `fragment_id.rsplit("/", 1)[0]` (article_position prefix) instead of article_num.
+
+**Chunk counts:**
+
+| Law | Articles | Chunks | Multi-part articles |
+|-----|----------|--------|---------------------|
+| СК РФ | 173 | ≥173 | yes (>0) |
+| ТК РФ | 538 | 538 | 0 (all пункты, not части) |
+| ГК РФ ч.1 | 591 | >591 | ≥10 |
+
+**Test results:** 23/23 pass. Total Russia tests: 52/52.
+
+---
+
 | Date | Decision | Reason |
 |------|----------|--------|
 | 2026-04-12 | UTF-16 LE encoding confirmed for all files | Direct byte inspection + Python read test |
