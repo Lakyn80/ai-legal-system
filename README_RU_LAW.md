@@ -935,6 +935,58 @@ Convert `ParseResult` objects from the parser into flat, ordered lists of `Russi
 
 ---
 
+## Step 3 — embedder.py + qdrant_writer.py
+
+**Status:** VERIFIED
+
+### Objective
+
+Implement dense embedding and Qdrant persistence for Russian law chunks. Create `russian_laws_v1` collection with correct schema (dense + sparse slot). Verify collection isolation from `czech_laws_v2`.
+
+### Scope
+
+**In scope:**
+- `embedder.py` — `RussianLawEmbedder` wrapping `EmbeddingService`; `EmbeddedRussianChunk` dataclass
+- `qdrant_writer.py` — `RussianLawQdrantWriter`: `ensure_collection()`, `upsert_batch()`, `count()`, `health_check()`
+- `test_qdrant_writer.py` — 11 integration tests against live Qdrant
+
+**Out of scope:**
+- Retrieval (Step 4)
+- BM25 / sparse retrieval (Milestone 2)
+- Celery / background tasks
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `backend/app/modules/russia/ingestion/embedder.py` | Created — `RussianLawEmbedder`, `EmbeddedRussianChunk` |
+| `backend/app/modules/russia/ingestion/qdrant_writer.py` | Created — `RussianLawQdrantWriter`, collection `russian_laws_v1` |
+| `backend/tests/russia/test_qdrant_writer.py` | Created — 11 integration tests |
+
+### Implementation details
+
+**Runtime embedding dimension: 384**
+
+Confirmed at test time:
+```
+provider=hash  model=Alibaba-NLP/gte-multilingual-base  dim=384
+```
+Dimension is never hardcoded — `embedder.dimension` reads from `EmbeddingService.dimension` which reads from the active provider at runtime.
+
+**Collection schema:**
+- `dense`: COSINE, size=384 (from runtime)
+- `sparse`: SparseVectorParams, on_disk=False — empty in M1, populated by Russian BM25 encoder in M2
+
+**Chunk point ID:** `chunk_id` from `chunk_builder` (already UUID5) — no second UUID derivation needed.
+
+**Empty-text guard:** `_to_point()` asserts `chunk.text.strip()` before constructing the PointStruct — catches any upstream regression immediately.
+
+**Collection isolation:** `_assert_target_collection()` is a hard guard called at the start of every public method — raises `AssertionError` if `COLLECTION_NAME` has been changed.
+
+**Test results:** 11/11 pass. Total Russia tests: 63/63.
+
+---
+
 | Date | Decision | Reason |
 |------|----------|--------|
 | 2026-04-12 | UTF-16 LE encoding confirmed for all files | Direct byte inspection + Python read test |
