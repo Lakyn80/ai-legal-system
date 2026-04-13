@@ -1170,6 +1170,612 @@ Implement semantic dense vector search against `russian_laws_v1`. Extend `Russia
 
 ---
 
+---
+
+## Step 7 — Sparse BM25 Retrieval + Hybrid RRF Fusion (VERIFIED 2026-04-12)
+
+**Status**: ACCEPTED ✓
+
+### What was built
+
+| File | Role |
+|------|------|
+| `backend/app/modules/russia/ingestion/sparse_encoder.py` | `RussianBM25Encoder`, `IDFTable`, `IDFTableBuilder`, Cyrillic-native tokenizer |
+| `backend/app/modules/russia/ingestion/embedder.py` | Extended with optional `bm25_encoder` param |
+| `backend/app/modules/russia/ingestion/service.py` | Two-pass IDF build; `idf_checkpoint_path` param |
+| `backend/app/modules/russia/ingestion/cli.py` | `--idf-checkpoint PATH` flag |
+| `backend/app/modules/russia/retrieval/sparse_retriever.py` | `RussianSparseRetriever` — BM25 against `russian_laws_v1` |
+| `backend/app/modules/russia/retrieval/fusion.py` | `reciprocal_rank_fusion()` — RRF over `list[RussianSearchResult]` |
+| `backend/app/modules/russia/retrieval/service.py` | `sparse_search()` + `hybrid_search()` with RRF fallback |
+| `backend/tests/russia/test_sparse_encoder.py` | 36 pure-Python unit tests |
+| `backend/tests/russia/test_sparse_retriever.py` | 23 integration tests |
+
+### IDF statistics (from corpus)
+
+| Metric | Value |
+|--------|-------|
+| Documents (chunks) | 2,508 |
+| Vocabulary (min_df=2) | 7,919 tokens |
+| Average document length | 72.3 tokens |
+
+### Tokenizer design
+
+The Russian tokenizer uses a Cyrillic-native regex `[а-яё]{2,}` (min 2 chars) plus short numeric tokens `[0-9]{1,6}`. Latin characters are excluded. `ё` (U+0451) is explicitly included since it falls outside the contiguous а–я range. No external NLP dependencies.
+
+### Re-ingestion command (required before running sparse tests)
+
+```bash
+python -m app.modules.russia.ingestion.cli \
+  --corpus /app/Ruske_zakony \
+  --no-checkpoint \
+  --idf-checkpoint /app/storage/idf_russian_laws_v1.json \
+  --quiet
+```
+
+### Test results
+
+- **36/36** pure-Python unit tests (tokenizer, IDFTable, encoder, RRF)
+- **23/23** integration tests (sparse search, law_id filter, hybrid fusion)
+- **59/59 total** — all pass
+
+---
+
+## Step 8 — Law-Constrained Topic Retrieval (VERIFIED 2026-04-12)
+
+**Status**: ACCEPTED ✓
+
+### What was built
+
+| File | Role |
+|------|------|
+| `backend/app/modules/russia/retrieval/query_analyzer.py` | `RussianQueryAnalyzer` — law aliases, article refs, topic detection |
+| `backend/app/modules/russia/retrieval/retrieval_planner.py` | `RussianRetrievalPlanner` — maps understanding → retrieval plan |
+| `backend/app/modules/russia/retrieval/service.py` | `analyze_query()` + `topic_search()` added |
+| `backend/tests/russia/test_query_analyzer.py` | 55 pure-Python unit tests |
+| `backend/tests/russia/test_topic_retrieval.py` | 23 integration tests |
+
+### Query modes
+
+| Mode | Trigger | Strategy |
+|------|---------|----------|
+| `exact_lookup` | Law alias + article ref (e.g. "ст. 81 тк рф") | `get_article()` → convert to `list[RussianSearchResult]` |
+| `law_constrained_search` | Explicit alias only (e.g. "ск рф права ребенка") | `hybrid_search(law_id=detected)` |
+| `topic_search` | Topic signals, no alias (e.g. "лишение родительских прав") | `hybrid_search(law_id=preferred)` |
+| `broad_search` | No signals | `hybrid_search(law_id=None)` |
+
+### Law aliases supported
+
+| Alias(es) | Maps to |
+|-----------|---------|
+| `ск рф`, `семейный кодекс`, `семейного кодекса` | `local:ru/sk` |
+| `гпк рф`, `гражданский процессуальный кодекс` | `local:ru/gpk` |
+| `гк рф`, `гражданский кодекс` | `local:ru/gk/1` |
+| `тк рф`, `трудовой кодекс` | `local:ru/tk` |
+
+### Topic signals
+
+| Topic | Sample signal phrases | Preferred law |
+|-------|-----------------------|---------------|
+| `family_law` | порядок общения с ребенком, лишение родительских прав, орган опеки | `local:ru/sk` |
+| `procedural_law` | апелляционная жалоба, процессуальные нарушения, отмена решения суда | `local:ru/gpk` |
+| `civil_law` | гражданские права, недействительная сделка, исковая давность | `local:ru/gk/1` |
+| `employment_law` | трудовой договор, расторжение, права работника | `local:ru/tk` |
+
+### Representative topic queries (VERIFIED against corpus)
+
+```
+# Family law — all results from СК РФ:
+"порядок общения с ребенком"          → SK results (all 10)
+"лишение родительских прав"           → SK results (all 10)
+"орган опеки и попечительства"        → SK results (all 10)
+"определение места жительства ребенка" → SK results (all 10)
+
+# Law alias constraints:
+"ск рф права ребенка"                 → SK only
+"тк рф расторжение договора"          → TK only
+"гк рф недействительная сделка"       → GK/1 only
+
+# Exact article lookup via topic_search:
+"ст. 69 ск рф"                        → SK article 69, score=1.0
+"ст. 81 тк рф"                        → TK article 81, score=1.0
+
+# GPK (not yet in corpus) — handled gracefully:
+"апелляционная жалоба"                → no error; returns empty or other law results
+"гпк рф ст. 131"                      → no error; returns empty (GPK not ingested)
+
+# Topic search beats unconstrained:
+"порядок общения с ребенком":
+  topic_search  → 10/10 SK results
+  hybrid_search → mixed results from all 3 laws
+```
+
+### GPK note
+
+`local:ru/gpk` is recognized by the analyzer and planner but GPK is not yet ingested into `russian_laws_v1`. Queries with GPK alias or procedural topic signals are handled without raising — they return empty results or fall back to broad search. GPK ingestion is covered in Step 9.
+
+### Test results
+
+- **55/55** pure-Python unit tests (analyzer + planner)
+- **23/23** integration tests (topic search, SK constraints, exact lookup, GPK graceful)
+- **78/78 total** — all pass
+
+---
+
+## Step 9 — GPK Ingest + Procedural Retrieval Verification (COMPLETED 2026-04-12)
+
+### Goal
+
+Ingest `Гражданский процессуальный кодекс РФ` into `russian_laws_v1` alongside GK/1, SK, and TK. Verify that procedural topic queries now return real GPK results, exact article lookup works for representative GPK articles, and existing laws are not regressed.
+
+### Ingest statistics
+
+IDF was rebuilt from all four laws to ensure GPK-specific vocabulary is covered.
+
+| Law | law_id | Articles | Tombstones | Chunks |
+|-----|--------|----------|------------|--------|
+| ГК РФ ч.1 | `local:ru/gk/1` | 591 | 38 | 1582 |
+| ГПК РФ | `local:ru/gpk` | 489 | 21 | 1279 |
+| СК РФ | `local:ru/sk` | 173 | 5 | 388 |
+| ТК РФ | `local:ru/tk` | 538 | 37 | 538 |
+| **Total** | | **1791** | **101** | **3787** |
+
+IDF rebuild: `n_docs=3787`, `vocab=9454` (↑1535 from Step 7), `avg_dl=64.5`
+
+### Re-ingest command
+
+```bash
+# From inside the container (or via docker exec):
+python -m app.modules.russia.ingestion.cli \
+  --corpus /app/Ruske_zakony \
+  --qdrant-url http://qdrant:6333 \
+  --idf-checkpoint /app/storage/idf_russian_laws_v1.json \
+  --no-checkpoint \
+  --checkpoint /app/russian_laws_checkpoint.json
+```
+
+Note: `--no-checkpoint` forces re-ingest of all files. The IDF is rebuilt from scratch if `idf_russian_laws_v1.json` does not exist; if it already exists, the existing IDF is loaded (faster, avoids Pass 1 scan).
+
+### GPK corpus characteristics
+
+GPK is structurally similar to TK and SK: single text file, UTF-16 LE encoding, standard `Статья N.` header pattern. No special parsing changes were needed — the existing ingestion pipeline handled it without modification.
+
+Notable GPK articles verified via exact lookup:
+
+| Article | Heading | Chunks |
+|---------|---------|--------|
+| 56 | Обязанность доказывания | 2 |
+| 113 | Судебные извещения и вызовы | 5 |
+| 131 | Форма и содержание искового заявления | 3 |
+| 320 | Право апелляционного обжалования | 2 |
+
+### Verified queries (Step 9)
+
+| Query | Mode | Expected | Result |
+|-------|------|----------|--------|
+| `ст. 113 гпк рф` | exact_lookup | GPK ст.113 chunks, score=1.0 | ✓ |
+| `ст. 131 гпк рф` | exact_lookup | GPK ст.131 chunks, score=1.0 | ✓ |
+| `ст. 320 гпк рф` | exact_lookup | GPK ст.320 chunks, score=1.0 | ✓ |
+| `апелляционная жалоба гпк рф` | law_constrained_search | All results local:ru/gpk | ✓ |
+| `извещение лиц о судебном заседании` | topic_search | GPK in results | ✓ |
+| `апелляционная жалоба на решение суда` | topic_search | GPK in results | ✓ |
+| `доказательства в суде` | topic_search | GPK in results | ✓ |
+| `процессуальные нарушения при рассмотрении дела` | topic_search | GPK in results | ✓ |
+| `отмена решения суда апелляционной инстанцией` | topic_search | GPK in results | ✓ |
+| `подсудность дел районному суду` | topic_search | GPK in results | ✓ |
+
+### Regression verification
+
+| Query | Expected | Result |
+|-------|----------|--------|
+| `лишение родительских прав` | All results SK only | ✓ |
+| `права ребенка ск рф` | All results SK only | ✓ |
+| `расторжение договора тк рф` | All results TK only | ✓ |
+| `ст. 69 ск рф` (exact) | SK ст.69 found | ✓ |
+| `ст. 81 тк рф` (exact) | TK ст.81 found | ✓ |
+| `ст. 169 гк рф` (exact) | GK/1 ст.169 found | ✓ |
+
+### Test results
+
+- **41/41** GPK integration tests (`test_gpk_retrieval.py`)
+  - Collection integrity: 4 tests
+  - Exact article lookup (direct): 7 tests
+  - Exact article via topic_search: 4 tests
+  - Procedural topic queries: 8 tests
+  - analyze_query GPK: 6 tests
+  - Regression (existing laws): 7 tests
+  - Result integrity: 5 tests
+- **23/23** Step 8 topic retrieval tests — no regressions
+- **119/119 total** integration tests — all pass
+
+---
+
+## Step 10 — Foreign Party / Interpreter / Language-of-Proceedings Retrieval (COMPLETED 2026-04-12)
+
+### Goal
+
+Strengthen the legal corpus and retrieval coverage for the foreign-party / interpreter / language-of-proceedings issue. Both supporting sources requested were present and usable:
+
+- `Конвенция о защите прав человека и основных свобод` (ЕКПЧ) — ingested as `local:ru/echr`
+- `Федеральный закон от 25.07.2002 N 115-ФЗ` (О правовом положении иностранных граждан) — ingested as `local:ru/fl115`
+
+### Why both sources were added
+
+| Source | Role | Key provisions |
+|--------|------|----------------|
+| ГПК РФ | **Primary** — civil procedure guarantees | ст. 9 (язык судопроизводства), ст. 162 (переводчик) |
+| ЕКПЧ | Supporting — fair trial rights | ст. 5(2) (inform in understood language), ст. 6(3)(e) (free interpreter if needed) |
+| ФЗ-115 | Supporting — foreign citizen status | Legal status, rights and obligations of foreigners in Russia |
+
+**GPK remains the primary source** for all interpreter/language procedural guarantees in civil proceedings. ЕКПЧ and ФЗ-115 are supporting sources — reachable via explicit alias or unconstrained hybrid search, but not promoted by topic routing.
+
+### Ingest statistics
+
+IDF rebuilt from all 6 laws.
+
+| Law | law_id | Articles | Tombstones | Chunks |
+|-----|--------|----------|------------|--------|
+| ЕКПЧ | `local:ru/echr` | 82 | 0 | 158 |
+| ФЗ-115 | `local:ru/fl115` | 64 | 22 | 247 |
+| ГК РФ ч.1 | `local:ru/gk/1` | 591 | 38 | 1582 |
+| ГПК РФ | `local:ru/gpk` | 489 | 21 | 1279 |
+| СК РФ | `local:ru/sk` | 173 | 5 | 388 |
+| ТК РФ | `local:ru/tk` | 538 | 37 | 538 |
+| **Total** | | **1937** | **123** | **4192** |
+
+IDF rebuild: `n_docs=4192`, `vocab=10426` (↑972 from Step 9), `avg_dl=71.9`
+
+### ЕКПЧ parsing note
+
+ЕКПЧ uses `Статья N` (no dot) with the heading on the **next line**, not on the article header line. The existing parser's `_STATYA_RE` pattern uses `\.?` (optional dot) so it matches correctly. Article headings are empty in the `article_heading` field but the heading text appears as the first line of the chunk body. This is acceptable for retrieval — the content is fully searchable.
+
+### Changes to source files
+
+**`backend/app/modules/russia/ingestion/loader.py`**
+- Added two entries to `_LAW_ID_MAP`:
+  - `("конвенция о защите прав", "local:ru/echr", "ЕКПЧ")`
+  - `("115-фз", "local:ru/fl115", "ФЗ-115")`
+
+**`backend/app/modules/russia/retrieval/query_analyzer.py`**
+- Added aliases for ЕКПЧ: `"конвенция о защите прав человека и основных свобод"`, `"конвенция о защите прав человека"`, `"екпч"`
+- Added aliases for ФЗ-115: `"федеральный закон 115-фз"`, `"фз-115"`, `"115-фз"`
+- Extended `procedural_law` phrases with: `"язык судопроизводства"`, `"язык гражданского судопроизводства"`, `"право на переводчика"`, `"не владеющий языком судопроизводства"`, `"лицо не владеющее языком"`, `"переводчик в гражданском процессе"`, `"переводчик в суде"`, `"иностранный гражданин в суде"`
+- Extended `procedural_law` stems with: `"переводчик"` (переводчика, переводчику), `"иностран"` (иностранец, иностранного, иностранных)
+
+### Verified queries (Step 10)
+
+| Query | Mode | Primary result | Supporting |
+|-------|------|----------------|------------|
+| `гпк рф статья 9` | exact_lookup | GPK ст.9, score=1.0 | — |
+| `гпк рф статья 162` | exact_lookup | GPK ст.162, score=1.0 | — |
+| `переводчик в гражданском процессе` | topic_search | GPK only (10/10) | — |
+| `язык судопроизводства` | topic_search | GPK only (10/10) | — |
+| `право на переводчика` | topic_search | GPK only (10/10) | — |
+| `лицо не владеющее языком судопроизводства` | topic_search | GPK only (10/10) | — |
+| `иностранный гражданин в суде` | topic_search | GPK only (10/10) | — |
+| `иностранец в российском суде` | broad_search | GPK majority (7/10) | ECHR (2/10) |
+| `право на переводчика 115-фз` | law_constrained | FL115 only (10/10) | — |
+| `право на переводчика екпч` | law_constrained | ECHR only (10/10) | — |
+| `конвенция о защите прав человека ст. 6` | exact_lookup | ECHR ст.6, score=1.0 | — |
+| `правовое положение иностранных граждан` | hybrid | FL115 prominent (7/10) | GPK, GK/1 |
+
+**Conclusion: GPK remains the primary source for interpreter/language rights in civil proceedings.** FL115 and ЕКПЧ are reachable via explicit law alias or unconstrained hybrid search.
+
+### Test results
+
+- **43/43** interpreter/language tests (`test_interpreter_language_retrieval.py`)
+  - Support corpus integrity: 3 tests
+  - GPK exact interpreter articles: 7 tests
+  - Interpreter topic returns GPK: 6 tests
+  - FL115 retrieval: 5 tests
+  - ECHR retrieval: 7 tests
+  - analyze_query interpreter: 9 tests
+  - No regressions: 6 tests
+- **119/119** existing integration tests — zero regressions
+- **162/162 total** integration tests — all pass
+
+---
+
+## Step 11 — Issue-Focused Multi-Source Retrieval Entrypoint (COMPLETED 2026-04-13)
+
+### Goal
+
+Build a narrow retrieval composition layer for the foreign-party / interpreter / language-of-proceedings problem. Returns primary (GPK) results and supporting (ECHR, FL115) results in a single structured call.
+
+### New file
+
+**`backend/app/modules/russia/retrieval/interpreter_issue.py`**
+
+Contains:
+- `IssueEvidence` — dataclass for a single evidence item, adding `source_role: str` (`"primary"` | `"supporting"`) to the standard search result fields
+- `InterpreterIssueResult` — dataclass with `primary`, `supporting`, `combined` lists and the original `query`
+- `InterpreterIssueRetrieval` — the retrieval class
+
+### Retrieval logic
+
+```
+retrieve(query, top_k_primary=5, top_k_support=3)
+  │
+  ├── analyze_query(query)
+  │     → understand mode, cleaned_query
+  │
+  ├── Primary pass (always GPK):
+  │     if exact_lookup + GPK alias → topic_search(query)   [score=1.0]
+  │     else                        → hybrid_search(query, law_id="local:ru/gpk")
+  │
+  ├── Support pass (unconstrained):
+  │     hybrid_search(cleaned_query, law_id=None, top_k=30)
+  │     → filter to {local:ru/echr, local:ru/fl115}
+  │     → keep up to top_k_support
+  │
+  └── combine = sorted(primary + supporting, key=-score)
+```
+
+### Verified queries and observed primary/support split (VERIFIED)
+
+| Query | Primary | Support |
+|-------|---------|---------|
+| `суд не предоставил переводчика` | 5 GPK results | 0–1 ECHR (broad query, GPK dominates) |
+| `я не понимал язык заседания` | 5 GPK results | 0 (narrow procedural, no support surfaces) |
+| `иностранец без переводчика в гражданском процессе` | 5 GPK results | 2–5 FL115 + ECHR |
+| `право на переводчика в российском суде` | 5 GPK results | 0–2 ECHR |
+| `право на справедливое судебное разбирательство` | 5 GPK results | 3 ECHR art=6 |
+| `ст. 162 гпк рф переводчик` | 5 GPK ст.162 exact, score=1.0 | varies |
+| `гпк рф статья 9` | 5 GPK ст.9 exact, score=1.0 | varies |
+
+**Note on support depth:** ECHR and FL115 score lower than GPK for most interpreter queries because GPK contains the specific procedural text. ECHR Art. 6 surfaces reliably when the query contains "справедливое судебное разбирательство" (direct Art. 6 language). FL115 surfaces for "иностранец" / "иностранных граждан" queries.
+
+### Design decisions
+
+| Decision | Reason |
+|----------|--------|
+| Always constrain primary to GPK | This class is narrow — GPK is always the procedural basis |
+| Support pool size = 30 (fixed constant) | Guarantees ECHR/FL115 surface even when GPK dominates first positions |
+| Exact-lookup mode respected | If query has GPK alias + article number, uses topic_search (score=1.0) |
+| Support may be empty | Valid and expected for narrow queries where no ECHR/FL115 content ranks in top 30 |
+| source_role on IssueEvidence | Required for downstream synthesis to know what role each piece plays |
+
+### Test results
+
+- **36/36** interpreter issue retrieval tests (`test_interpreter_issue_retrieval.py`)
+  - Output types: 6 tests
+  - Primary always GPK: 7 tests
+  - Supporting results: 7 tests
+  - Combined results: 5 tests
+  - Top-k constraints: 2 tests
+  - Exact lookup: 3 tests
+  - No LLM: 1 test
+  - No regressions: 5 tests
+- **162/162** prior integration tests — zero regressions
+- **198/198 total** integration tests — all pass
+
+---
+
+## Step 12 — Case-Text-to-Evidence Bridge (COMPLETED 2026-04-12)
+
+### Goal
+
+Build a case-description-to-evidence bridge covering three sub-issues of the interpreter / language / notice issue cluster. Accepts a short natural-language case description in Russian and returns a structured `CaseBridgeResult` with primary GPK evidence (including deterministic anchor articles) and supporting ECHR/FL115 evidence.
+
+### New file
+
+**`backend/app/modules/russia/retrieval/case_bridge.py`**
+
+Contains:
+- `_SUBISSUE_SIGNALS` — phrase + stem matching config for `interpreter_issue`, `language_issue`, `notice_issue`
+- `_SUBISSUE_ANCHOR_ARTICLES` — anchor GPK articles fetched via exact lookup per sub-issue: interpreter→[9,162], language→[9], notice→[113]
+- `_SUBISSUE_QUERIES` — canonical retrieval queries for semantic enrichment per sub-issue
+- `CaseBridgeResult` — structured output dataclass
+- `CaseIssueBridge` — bridge class with `analyze()` method
+- `_detect_subissues()` — deterministic phrase/stem scoring helper
+- `_chunk_to_evidence()` — converts exact-lookup chunks to `IssueEvidence` at score=1.0
+
+### Analysis logic
+
+```
+analyze(case_text)
+  │
+  ├── 1. _detect_subissues(text.lower())
+  │       phrase matching (weight=2.0) + stem prefix matching (weight=1.0)
+  │       threshold=1.0; returns ordered list of detected sub-issue names
+  │
+  ├── 2. Anchor article fetch (exact lookup, score=1.0) per sub-issue
+  │       interpreter: ст. 9, ст. 162 | language: ст. 9 | notice: ст. 113
+  │       deduped (ст. 9 fetched only once for interpreter+language combined)
+  │
+  ├── 3. Semantic enrichment per sub-issue (hybrid_search, GPK-constrained)
+  │       canonical query per sub-issue, top_k=semantic_k (default 3)
+  │       adds non-duplicate GPK results to primary_map
+  │
+  ├── 4. Support pass (unconstrained, pool=30)
+  │       hybrid_search(case_text, law_id=None, top_k=30)
+  │       filter to {local:ru/echr, local:ru/fl115}
+  │       keep up to top_k_support (default 3)
+  │
+  └── primary = sorted(primary_map)[:top_k_primary]
+      combined = sorted(primary + supporting, key=-score)
+```
+
+### Bug fix during development
+
+**`вызов` noun stem** — the stem `"вызв"` matches the verb *вызвать* (`вызвали`, `вызвать`) but NOT the noun *вызов* in genitive `вызова` (В-Ы-З-О-В-А). Added `"вызов"` as an additional stem so that `"без официального вызова в суд"` correctly triggers `notice_issue`.
+
+### Verified case descriptions and detected sub-issues
+
+| Case description | Detected sub-issues | Anchor articles |
+|------------------|---------------------|-----------------|
+| `иностранный гражданин не получил переводчика в суде` | `interpreter_issue` | ст. 9, ст. 162 |
+| `я не понимал язык заседания` | `language_issue` | ст. 9 |
+| `меня не вызвали в суд надлежащим образом` | `notice_issue` | ст. 113 |
+| `я не был официально уведомлен о судебном заседании` | `notice_issue` | ст. 113 |
+| `суд рассмотрел дело без моего извещения` | `notice_issue` | ст. 113 |
+| `иностранец без переводчика и без официального вызова в суд` | `interpreter_issue`, `notice_issue` | ст. 9, ст. 162, ст. 113 |
+| `суд отказал в иске` | *(no match)* | — |
+
+### Test results
+
+- **77/77** case bridge tests (`test_case_bridge.py`)
+  - `TestDetectSubissues`: 19 unit tests (no service; run always)
+  - `TestCaseBridgeNoMatch`: 5 tests
+  - `TestCaseBridgeInterpreterIssue`: 14 tests
+  - `TestCaseBridgeLanguageIssue`: 4 tests
+  - `TestCaseBridgeNoticeIssue`: 10 tests (3 case descriptions × 3 parametrized + 1)
+  - `TestCaseBridgeCombinedIssue`: 10 tests
+  - `TestCaseBridgeSupportingSources`: 3 tests
+  - `TestCaseBridgeOutputTypes`: 8 tests
+  - `TestCaseBridgeRegressions`: 4 tests
+- **275/275 total** integration tests — all pass
+
+---
+
+## Step 13 — Dedicated Russian HTTP API (separate from Czech)
+
+### Goal
+
+Expose the verified Russian retrieval stack over **dedicated REST routes** under `/api/russia/*`. Czech law remains on `/api/search`, `/api/search/answer`, and related paths. There is **no** routing of Russian retrieval through the Czech pipeline or the default `czech_laws_v2` collection.
+
+### Architecture rule (ongoing)
+
+| Layer | Russian | Czech |
+|--------|---------|--------|
+| HTTP prefix | `/api/russia/...` | `/api/search`, `/api/search/answer`, … |
+| Qdrant collection | `russian_laws_v1` | `czech_laws_v2` (and Czech adapters) |
+| Dependency | `get_russian_retrieval_service` | `get_czech_law_retrieval_service`, `get_czech_search_answer_service`, … |
+
+No silent country switching inside `/api/search/answer` for Russia: use the Russian endpoints below.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/russia/article` | Exact article lookup: `law_id`, `article_num`, optional `part_num` |
+| POST | `/api/russia/search` | Body: `query`, optional `law_id`, `top_k`, `mode` (`hybrid` \| `dense` \| `sparse` \| `topic`) |
+| POST | `/api/russia/interpreter-issue` | Thin wrapper over `CaseIssueBridge` (interpreter / language / notice cluster) |
+
+**No-hit behavior (GET article):** HTTP **200** with `hit: false`, `chunks: []`, and empty `article_heading` when the article does not exist — **not** HTTP 404 (deterministic, machine-friendly).
+
+**Tombstone:** HTTP 200 with `hit: true`, `is_tombstone: true`, and repeal text in chunks (e.g. ст. 7 ТК РФ).
+
+### UTF-8 and Cyrillic
+
+- JSON request bodies must use **UTF-8** (`Content-Type: application/json` or `application/json; charset=utf-8`).
+- Swagger (`/docs`) accepts Cyrillic in the request body examples.
+
+**curl**
+
+```bash
+curl -s -X POST "http://localhost:8000/api/russia/search" \
+  -H "Content-Type: application/json; charset=utf-8" \
+  -d "{\"query\":\"язык судопроизводства\",\"law_id\":\"local:ru/gpk\",\"top_k\":3}"
+```
+
+**PowerShell** (recommended: build JSON from a hashtable so Cyrillic is encoded correctly; avoid raw string bodies with Cyrillic on Windows PowerShell 5.x and avoid `-Body` as byte array, which can trigger chunked encoding issues):
+
+```powershell
+$base = "http://localhost:8000"
+$body = @{
+    query   = "переводчик в гражданском процессе"
+    law_id  = "local:ru/gpk"
+    top_k   = 3
+    mode    = "hybrid"
+} | ConvertTo-Json -Compress
+Invoke-RestMethod -Uri "$base/api/russia/search" -Method POST `
+  -ContentType "application/json; charset=utf-8" -Body $body
+```
+
+**Example GET**
+
+```text
+GET /api/russia/article?law_id=local%3Aru%2Fgpk&article_num=9
+```
+
+### Code locations
+
+| Item | Path |
+|------|------|
+| Routes | `backend/app/api/routes/russia.py` |
+| Router include | `backend/app/api/router.py` |
+| DI | `get_russian_retrieval_service` in `backend/app/core/dependencies.py` |
+| Contract tests (no Qdrant) | `backend/tests/russia/test_russia_api_contract.py` |
+| Live stack tests (Docker / populated `russian_laws_v1`) | `backend/tests/russia/test_russia_api.py` |
+| Smoke script | `test_russia_interpreter_notice.ps1` (repo root) |
+
+### Verified Cyrillic query examples (for manual / integration checks)
+
+- `переводчик в гражданском процессе`
+- `язык судопроизводства`
+- `я не был официально уведомлен о судебном заседании`
+- `суд рассмотрел дело без моего извещения`
+- `иностранный гражданин без переводчика в суде`
+
+### Test status
+
+- **Contract tests** (`test_russia_api_contract.py`): **VERIFIED** — run `pytest backend/tests/russia/test_russia_api_contract.py` (no Qdrant).
+- **Live HTTP tests** (`test_russia_api.py`): **VERIFIED** (2026-04-13) — úspěšně spuštěno proti běžícímu API a kolekci `russian_laws_v1` (skip guard v souboru přeskočen = stack připraven).
+
+## Step 14 — Deterministic legal taxonomy layer (focused scope)
+
+### Goal
+
+Add a rigid retrieval taxonomy under AI reasoning for the currently active scope only:
+- procedural language/interpreter/notice defects (GPK),
+- alimony and alimony debt/enforcement support (SK),
+- supporting fair-trial/foreign-party sources (ECHR / FL115).
+
+### Implemented
+
+- New module: `backend/app/modules/common/legal_taxonomy/`
+  - `schemas.py` — typed law/article taxonomy contracts
+  - `russia_focus_taxonomy.py` — curated focused dataset (`ru_focus_v1`)
+  - `service.py` — deterministic lookups (`get_articles_for_issue`, anchor/topic/law maps)
+- New tests: `backend/tests/common/test_russia_focus_legal_taxonomy.py`
+
+### Coverage
+
+- Laws: `local:ru/gpk`, `local:ru/sk`, `local:ru/echr`, `local:ru/fl115`
+- Core procedural anchors: GPK ст. 9 / 162 / 113 (+ support 116 / 167)
+- Core alimony anchors: SK ст. 80 / 81 / 83 / 107 / 113 / 115 / 117
+- Supporting: ECHR ст. 6, FL115 topic support layer
+
+### Test status
+
+- **Taxonomy unit tests** (`test_russia_focus_legal_taxonomy.py`): **VERIFIED** (6 passed).
+
+## Step 15 — Taxonomy-first retrieval routing (API + service consistency)
+
+### Goal
+
+Enforce one shared deterministic control path for Russian retrieval:
+1) issue detection,
+2) taxonomy candidate article/law selection,
+3) anchor/law boosting,
+4) scope filtering,
+then hybrid/dense/sparse ranking.
+
+### Implemented
+
+- Shared wrapper: `backend/app/modules/russia/retrieval/taxonomy_first.py`
+- `/api/russia/search` now uses shared taxonomy-first wrapper (not duplicated logic)
+- `RussianRetrievalService` now uses the same wrapper for:
+  - `search()` (dense path),
+  - `sparse_search()`,
+  - `hybrid_search()`,
+  - `topic_search()`
+- Added DI for taxonomy service: `get_russia_focus_taxonomy_service()`
+
+### Expected behavior (deterministic routing)
+
+- `алименты` → SK-focused articles
+- `без уведомления` → GPK notice cluster (incl. ст.113)
+- `без переводчика` → GPK language/interpreter cluster (ст.9 / ст.162)
+
+### Test status
+
+- **Route + service alignment** (`test_topic_search_taxonomy_alignment.py`): **VERIFIED**
+- **Search taxonomy contract** (`test_russia_search_taxonomy_contract.py`): **VERIFIED**
+- Combined contract run (`test_russia_api_contract.py`, taxonomy tests, alignment tests): **VERIFIED** (22 passed in latest run)
+
+---
+
 | Date | Decision | Reason |
 |------|----------|--------|
 | 2026-04-12 | UTF-16 LE encoding confirmed for all files | Direct byte inspection + Python read test |
@@ -1187,3 +1793,6 @@ Implement semantic dense vector search against `russian_laws_v1`. Extend `Russia
 | 2026-04-12 | fragment_id = law_id/article_position:06d/chunk_index:04d | Lexsortable, derived from explicit sequential counters only |
 | 2026-04-12 | Noise filter (Pass 1) runs before tombstone detector (Pass 2) | Prevents `(в ред. ... утратил силу)` annotation from triggering tombstone flag |
 | 2026-04-12 | Editor noise and legal-status content are strictly separate categories | Drop: КонсультантПлюс annotations. Preserve: Утратила силу in official text |
+| 2026-04-13 | Russian HTTP API only under `/api/russia/*`; Czech unchanged | Explicit separation; no Russian retrieval via `/api/search/answer` in this step |
+| 2026-04-13 | Retrieval taxonomy limited to active procedural/alimony scope | Deterministic precision; avoid broad corpus drift in current phase |
+| 2026-04-13 | One shared taxonomy-first engine for API and internal service | Guarantees consistent routing/boost/filter logic across entry points |

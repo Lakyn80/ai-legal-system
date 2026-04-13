@@ -1,0 +1,286 @@
+{
+  "$defs": {
+    "FactToLawRow": {
+      "properties": {
+        "issue_name": {
+          "title": "Issue Name",
+          "type": "string"
+        },
+        "relevant_facts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Relevant Facts",
+          "type": "array"
+        },
+        "legal_provisions": {
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          },
+          "title": "Legal Provisions",
+          "type": "array"
+        },
+        "assessment_strength": {
+          "enum": [
+            "strong",
+            "medium",
+            "weak"
+          ],
+          "title": "Assessment Strength",
+          "type": "string"
+        },
+        "comment": {
+          "description": "Analytical comment; flag uncertainty if facts or excerpts are thin.",
+          "title": "Comment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_name",
+        "assessment_strength",
+        "comment"
+      ],
+      "title": "FactToLawRow",
+      "type": "object"
+    },
+    "InsufficientSupportItem": {
+      "description": "Use under STRICT RELIABILITY when a point cannot be grounded.",
+      "properties": {
+        "topic": {
+          "title": "Topic",
+          "type": "string"
+        },
+        "reason": {
+          "default": "Insufficient support in current evidence pack.",
+          "description": "Standard phrase when conclusion cannot be tied to fact + provision.",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic"
+      ],
+      "title": "InsufficientSupportItem",
+      "type": "object"
+    },
+    "MissingEvidenceBlock": {
+      "properties": {
+        "what_is_unclear": {
+          "items": {
+            "type": "string"
+          },
+          "title": "What Is Unclear",
+          "type": "array"
+        },
+        "needed_documents_or_facts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needed Documents Or Facts",
+          "type": "array"
+        }
+      },
+      "title": "MissingEvidenceBlock",
+      "type": "object"
+    },
+    "NextStepItem": {
+      "properties": {
+        "step_order": {
+          "description": "1-based sequence.",
+          "minimum": 1,
+          "title": "Step Order",
+          "type": "integer"
+        },
+        "action": {
+          "description": "Concrete, case-oriented action.",
+          "title": "Action",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_order",
+        "action"
+      ],
+      "title": "NextStepItem",
+      "type": "object"
+    },
+    "PrimaryBasisItem": {
+      "properties": {
+        "provision": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "why_it_matters": {
+          "description": "Why this norm matters for this case, grounded in supplied excerpts.",
+          "title": "Why It Matters",
+          "type": "string"
+        },
+        "connected_facts": {
+          "description": "Facts from the input that tie to this provision.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Connected Facts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "provision",
+        "why_it_matters"
+      ],
+      "title": "PrimaryBasisItem",
+      "type": "object"
+    },
+    "SourceRef": {
+      "description": "Reference to a provision from the supplied evidence pack only.",
+      "properties": {
+        "law": {
+          "description": "Short law label as in the pack, e.g. GPK RF, ECHR.",
+          "title": "Law",
+          "type": "string"
+        },
+        "article": {
+          "description": "Article number as string, e.g. 9, 113, 6.",
+          "title": "Article",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional heading from the pack.",
+          "title": "Title"
+        }
+      },
+      "required": [
+        "law",
+        "article"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "StrategicAssessmentBlock": {
+      "properties": {
+        "strongest_arguments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Strongest Arguments",
+          "type": "array"
+        },
+        "weaker_arguments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Weaker Arguments",
+          "type": "array"
+        },
+        "likely_vulnerabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Likely Vulnerabilities",
+          "type": "array"
+        },
+        "opposing_side_may_argue": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Opposing Side May Argue",
+          "type": "array"
+        }
+      },
+      "title": "StrategicAssessmentBlock",
+      "type": "object"
+    },
+    "SupportingBasisItem": {
+      "properties": {
+        "provision": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "how_it_reinforces": {
+          "description": "How this supporting norm backs or frames the primary case.",
+          "title": "How It Reinforces",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provision",
+        "how_it_reinforces"
+      ],
+      "title": "SupportingBasisItem",
+      "type": "object"
+    }
+  },
+  "description": "Full Agent 2 output. All legal citations must appear in the input evidence pack.",
+  "properties": {
+    "schema_version": {
+      "default": "agent2_legal_strategy.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "case_theory": {
+      "description": "One short paragraph: core legal problem in this case.",
+      "title": "Case Theory",
+      "type": "string"
+    },
+    "primary_legal_basis": {
+      "items": {
+        "$ref": "#/$defs/PrimaryBasisItem"
+      },
+      "title": "Primary Legal Basis",
+      "type": "array"
+    },
+    "supporting_legal_basis": {
+      "items": {
+        "$ref": "#/$defs/SupportingBasisItem"
+      },
+      "title": "Supporting Legal Basis",
+      "type": "array"
+    },
+    "fact_to_law_mapping": {
+      "items": {
+        "$ref": "#/$defs/FactToLawRow"
+      },
+      "title": "Fact To Law Mapping",
+      "type": "array"
+    },
+    "strategic_assessment": {
+      "$ref": "#/$defs/StrategicAssessmentBlock"
+    },
+    "missing_evidence_gaps": {
+      "$ref": "#/$defs/MissingEvidenceBlock"
+    },
+    "recommended_next_steps": {
+      "items": {
+        "$ref": "#/$defs/NextStepItem"
+      },
+      "title": "Recommended Next Steps",
+      "type": "array"
+    },
+    "draft_argument_direction": {
+      "description": "Plain-language lead-in, e.g. \"The case should argue that...\"",
+      "title": "Draft Argument Direction",
+      "type": "string"
+    },
+    "insufficient_support_items": {
+      "description": "Optional: conclusions that could not be tied to a supplied fact and provision. Prefer this over hallucinating under STRICT RELIABILITY.",
+      "items": {
+        "$ref": "#/$defs/InsufficientSupportItem"
+      },
+      "title": "Insufficient Support Items",
+      "type": "array"
+    }
+  },
+  "required": [
+    "case_theory",
+    "draft_argument_direction"
+  ],
+  "title": "LegalStrategyAgent2Output",
+  "type": "object"
+}

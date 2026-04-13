@@ -260,6 +260,20 @@ def get_search_answer_service() -> SearchAnswerService:
 
 
 @lru_cache(maxsize=1)
+def get_czech_labor_gate():
+    from app.modules.czechia.retrieval.labor_gate import LaborGate
+
+    return LaborGate()
+
+
+@lru_cache(maxsize=1)
+def get_czech_labor_evidence_gate():
+    from app.modules.czechia.retrieval.labor_evidence_gate import LaborEvidenceGate
+
+    return LaborEvidenceGate()
+
+
+@lru_cache(maxsize=1)
 def get_czech_law_retrieval_service() -> CzechLawRetrievalService:
     from app.modules.czechia.retrieval.dense_retriever import CzechLawDenseRetriever
     from app.modules.czechia.retrieval.service import CzechLawRetrievalService
@@ -272,6 +286,7 @@ def get_czech_law_retrieval_service() -> CzechLawRetrievalService:
     return CzechLawRetrievalService(
         embedding_service=get_embedding_service(),
         dense_retriever=dense_retriever,
+        labor_gate=get_czech_labor_gate(),
     )
 
 
@@ -293,7 +308,39 @@ def get_czech_search_answer_service() -> SearchAnswerService:
         exact_cache_service=get_exact_cache_service(),
         semantic_cache_service=get_semantic_cache_service(),
         metrics_service=get_cache_metrics_service(),
+        pre_retrieval_gate=get_czech_labor_gate(),
+        pre_llm_evidence_gate=get_czech_labor_evidence_gate(),
     )
+
+
+@lru_cache(maxsize=1)
+def get_russian_retrieval_service():
+    """
+    Dependency for the dedicated Russian retrieval service.
+
+    Uses russian_laws_v1 collection — completely separate from the Czech pipeline.
+    IDF checkpoint is resolved from the configured storage_path so it works in
+    both the Docker container (/app/storage) and local dev environments.
+    """
+    from pathlib import Path
+
+    from app.modules.russia.retrieval.service import RussianRetrievalService
+
+    settings = get_settings()
+    idf_path = Path(settings.storage_path) / "idf_russian_laws_v1.json"
+    return RussianRetrievalService(
+        embedding_service=get_embedding_service(),
+        qdrant_url=settings.qdrant_url,
+        qdrant_api_key=settings.qdrant_api_key,
+        idf_checkpoint_path=idf_path if idf_path.exists() else None,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_russia_focus_taxonomy_service():
+    from app.modules.common.legal_taxonomy.service import get_russia_focus_taxonomy_service
+
+    return get_russia_focus_taxonomy_service()
 
 
 def get_app_settings() -> Settings:
