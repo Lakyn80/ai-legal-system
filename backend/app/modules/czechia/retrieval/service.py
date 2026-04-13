@@ -13,6 +13,7 @@ from app.modules.czechia.retrieval.cross_encoder_reranker import rerank as cross
 from app.modules.czechia.retrieval.dense_retriever import CzechLawDenseRetriever
 from app.modules.czechia.retrieval.evidence_validator import CzechLawEvidenceValidator
 from app.modules.czechia.retrieval.fusion import rrf_fuse
+from app.modules.czechia.retrieval.labor_gate import LaborGate
 from app.modules.czechia.retrieval.query_analyzer import CzechQueryAnalyzer
 from app.modules.czechia.retrieval.reranker import CzechLawReranker, diversify_by_paragraph
 from app.modules.czechia.retrieval.retrieval_planner import CzechLawRetrievalPlanner
@@ -28,6 +29,7 @@ class CzechLawRetrievalService:
         self,
         embedding_service: EmbeddingService,
         dense_retriever: CzechLawDenseRetriever,
+        labor_gate: LaborGate | None = None,
     ) -> None:
         self._embedding = embedding_service
         self._dense = dense_retriever
@@ -36,6 +38,7 @@ class CzechLawRetrievalService:
             api_key=dense_retriever.api_key,
         )
         self._analyzer = CzechQueryAnalyzer()
+        self._labor_gate = labor_gate or LaborGate(self._analyzer)
         self._ambiguity_handler = CzechAmbiguityHandler()
         self._planner = CzechLawRetrievalPlanner()
         self._reranker = CzechLawReranker()
@@ -56,6 +59,18 @@ class CzechLawRetrievalService:
         # Run full analysis first so we can check for law refs detected by the analyzer
         # (e.g. "zákon o daních z příjmů" not in simple parser's alias map)
         understanding = self._analyzer.analyze(parsed["normalized_query"])
+        gate_decision = self._labor_gate.evaluate(
+            request.query,
+            understanding=understanding,
+        )
+        if not gate_decision.allows_retrieval:
+            log.info(
+                "czech labor gate blocked query bucket=%s reasons=%s query=%r",
+                gate_decision.bucket,
+                gate_decision.reason_codes,
+                query,
+            )
+            return [gate_decision.to_search_result()]
 
         if is_paragraph_only and not has_keywords and not understanding.detected_law_refs:
             ambiguity = self._ambiguity_handler.evaluate(

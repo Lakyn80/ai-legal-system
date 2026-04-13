@@ -13,12 +13,11 @@ from app.core.dependencies import (
     get_search_answer_service,
 )
 from app.core.enums import CountryEnum, DomainEnum
-from app.modules.common.ambiguity.detector import is_paragraph_only
 from app.modules.common.relevance.filter import filter_by_score
 from app.modules.common.relevance.reranker import rerank
 from app.modules.common.orchestration.search_pipeline import SearchAnswerService
 from app.modules.common.qdrant.retrieval_service import RetrievalService
-from app.modules.common.qdrant.schemas import SearchRequest, SearchResponse, SearchResultItem
+from app.modules.common.qdrant.schemas import SearchRequest, SearchResponse
 from app.modules.common.responses.schemas import BatchSearchAnswerResponse, SearchAnswerResponse
 from app.modules.czechia.retrieval.service import CzechLawRetrievalService
 
@@ -36,29 +35,6 @@ def search_documents(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     czech_retrieval: CzechLawRetrievalService = Depends(get_czech_law_retrieval_service),
 ):
-    if request.country == CountryEnum.CZECHIA and (
-        request.domain is None or request.domain == DomainEnum.LAW
-    ) and is_paragraph_only(request.query):
-        return SearchResponse(
-            results=[
-                SearchResultItem(
-                    chunk_id="clarification",
-                    document_id="",
-                    filename="Upřesnění dotazu",
-                    country=CountryEnum.CZECHIA,
-                    domain=DomainEnum.LAW,
-                    jurisdiction_module="czechia",
-                    text="Upřesni zákon (např. zákoník práce, občanský zákoník...)",
-                    chunk_index=0,
-                    source_type="clarification",
-                    source=None,
-                    case_id=None,
-                    tags=[],
-                    score=1.0,
-                )
-            ]
-        )
-
     if request.country == CountryEnum.CZECHIA and (
         request.domain is None or request.domain == DomainEnum.LAW
     ):

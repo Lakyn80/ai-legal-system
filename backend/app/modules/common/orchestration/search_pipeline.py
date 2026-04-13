@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from app.modules.common.cache.exact_cache import ExactCacheService
 from app.modules.common.cache.semantic_cache import SemanticCacheService
@@ -18,8 +21,13 @@ from app.modules.common.qdrant.schemas import HybridSearchResponse, SearchReques
 from app.modules.common.querying.schemas import QueryType
 from app.modules.common.querying.service import QueryProcessingService
 from app.modules.common.reasoning.confidence import ConfidenceGate
+from app.modules.common.reasoning.schemas import ConfidenceDecision, ConfidenceLevel
 from app.modules.common.responses.builders import SearchResponseBuilder
 from app.modules.common.responses.schemas import SearchAnswerResponse, SemanticExplanation
+
+if TYPE_CHECKING:
+    from app.modules.czechia.retrieval.labor_evidence_gate import LaborEvidenceDecision, LaborEvidenceGate
+    from app.modules.czechia.retrieval.labor_gate import LaborGate, LaborGateDecision
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +46,8 @@ class SearchAnswerService:
         exact_cache_service: ExactCacheService | None = None,
         semantic_cache_service: SemanticCacheService | None = None,
         metrics_service: CacheMetricsService | None = None,
+        pre_retrieval_gate: LaborGate | None = None,
+        pre_llm_evidence_gate: LaborEvidenceGate | None = None,
     ) -> None:
         self.query_processing_service = query_processing_service
         self.retrieval_service = retrieval_service
@@ -49,6 +59,8 @@ class SearchAnswerService:
         self.exact_cache_service = exact_cache_service
         self.semantic_cache_service = semantic_cache_service
         self.metrics_service = metrics_service
+        self.pre_retrieval_gate = pre_retrieval_gate
+        self.pre_llm_evidence_gate = pre_llm_evidence_gate
 
     def answer(self, request: SearchRequest) -> SearchAnswerResponse:
         if self.metrics_service is not None:
@@ -65,6 +77,21 @@ class SearchAnswerService:
             requested_domain=request.domain.value if request.domain is not None else None,
             top_k=request.top_k,
         )
+        gate_decision = self._evaluate_pre_retrieval_gate(request, query_context)
+        if gate_decision is not None and not gate_decision.allows_retrieval:
+            self._log(
+                "search.pipeline.blocked_pre_retrieval_gate",
+                query_context=query_context,
+                gate_bucket=gate_decision.bucket,
+                reason_codes=gate_decision.reason_codes,
+            )
+            return self._build_system_fallback_response(
+                query_context=query_context,
+                retrieval=HybridSearchResponse(results=[gate_decision.to_search_result()]),
+                message=gate_decision.message,
+                reason_codes=gate_decision.reason_codes,
+                score_summary={"pre_retrieval_blocked": 1},
+            )
         cached_response = self._get_cached_response(query_context)
         if cached_response is not None:
             self._log("search.pipeline.short_circuit_exact_cache", query_context=query_context)
@@ -91,6 +118,27 @@ class SearchAnswerService:
         if self.metrics_service is not None:
             self.metrics_service.increment_retrieval()
         retrieval = self.retrieval_service.retrieve(retrieval_request)
+        evidence_decision = self._evaluate_pre_llm_evidence_gate(
+            request=request,
+            query_context=query_context,
+            retrieval=retrieval,
+            gate_decision=gate_decision,
+        )
+        if evidence_decision is not None and not evidence_decision.allows_llm:
+            fallback_result = retrieval.results or [evidence_decision.to_search_result()]
+            self._log(
+                "search.pipeline.blocked_pre_llm_evidence_gate",
+                query_context=query_context,
+                reason_codes=evidence_decision.reason_codes,
+                score_summary=evidence_decision.metrics,
+            )
+            return self._build_system_fallback_response(
+                query_context=query_context,
+                retrieval=HybridSearchResponse(results=fallback_result, features=retrieval.features),
+                message=evidence_decision.message,
+                reason_codes=evidence_decision.reason_codes,
+                score_summary=evidence_decision.metrics,
+            )
         decision = self.confidence_gate.evaluate(query_context, retrieval)
         self._log(
             "search.pipeline.retrieval_completed",
@@ -235,6 +283,75 @@ class SearchAnswerService:
             self.exact_cache_service.set(query_context, response)
         if self.semantic_cache_service is not None:
             self.semantic_cache_service.set(query_context, response)
+
+    def _evaluate_pre_retrieval_gate(
+        self,
+        request: SearchRequest,
+        query_context,
+    ) -> LaborGateDecision | None:
+        if self.pre_retrieval_gate is None:
+            return None
+        if query_context.query_type == QueryType.STRATEGY:
+            return None
+        if request.country not in (None, CountryEnum.CZECHIA):
+            return None
+        if request.domain not in (None, DomainEnum.LAW):
+            return None
+        return self.pre_retrieval_gate.evaluate(request.query)
+
+    def _evaluate_pre_llm_evidence_gate(
+        self,
+        *,
+        request: SearchRequest,
+        query_context,
+        retrieval: HybridSearchResponse,
+        gate_decision: LaborGateDecision | None,
+    ) -> LaborEvidenceDecision | None:
+        if self.pre_llm_evidence_gate is None or gate_decision is None:
+            return None
+        if request.country not in (None, CountryEnum.CZECHIA):
+            return None
+        if request.domain not in (None, DomainEnum.LAW):
+            return None
+        return self.pre_llm_evidence_gate.evaluate(
+            query=request.query,
+            gate_decision=gate_decision,
+            query_context=query_context,
+            retrieval=retrieval,
+        )
+
+    def _build_system_fallback_response(
+        self,
+        *,
+        query_context,
+        retrieval: HybridSearchResponse,
+        message: str,
+        reason_codes: list[str],
+        score_summary: dict[str, float | bool | int],
+    ) -> SearchAnswerResponse:
+        decision = ConfidenceDecision(
+            level=ConfidenceLevel.LOW,
+            use_llm=False,
+            response_type="semantic_explanation",
+            reason_codes=reason_codes,
+            score_summary=score_summary,
+        )
+        response_payload = self.response_builder.build_semantic_answer(
+            query_context=query_context,
+            retrieval=retrieval,
+            decision=decision,
+            summary=message,
+            explanation=message,
+            key_points=[],
+            llm_used=False,
+            model_name=None,
+        )
+        return self.response_builder.build_answer_response(
+            query_context=query_context,
+            retrieval=retrieval,
+            decision=decision,
+            response_payload=response_payload,
+        )
 
     def _log(self, event: str, query_context, **fields) -> None:
         log_event(

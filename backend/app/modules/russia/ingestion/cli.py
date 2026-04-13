@@ -121,6 +121,17 @@ def main() -> None:
         help="Ignore existing checkpoint and re-ingest all files",
     )
     parser.add_argument(
+        "--idf-checkpoint",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to IDFTable JSON for BM25 sparse encoding. "
+            "If the file does not exist, it is built from the corpus and saved here. "
+            "When omitted, sparse vectors are left empty (Milestone 1 mode)."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress progress output",
@@ -210,6 +221,7 @@ def main() -> None:
             qdrant_api_key=args.qdrant_api_key,
             batch_size=args.batch_size,
             checkpoint_path=checkpoint_path or args.checkpoint,
+            idf_checkpoint_path=args.idf_checkpoint,
             verbose=verbose,
         )
 

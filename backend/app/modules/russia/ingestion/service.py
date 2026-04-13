@@ -1,9 +1,13 @@
 """
-Russian law ingestion orchestrator — Milestone 1.
+Russian law ingestion orchestrator — Milestone 1 / Step 7.
 
 Pipeline
 ────────
   loader → parser → chunk_builder → embedder → qdrant_writer
+
+Optional two-pass BM25 sparse encoding (Step 7):
+  Pass 1: parse all files → build IDFTable → save checkpoint
+  Pass 2: ingest with dense + sparse vectors
 
 Two public entry points:
   ingest_law_file(path, ...)   — ingest a single .txt file end-to-end
@@ -17,16 +21,17 @@ Checkpoint
   The checkpoint is written atomically after each file succeeds.
   A failed file is NOT added to the checkpoint — the next run will retry it.
 
+IDF checkpoint
+──────────────
+  When idf_checkpoint_path is given:
+    - If the file exists: load IDFTable from it (skip Pass 1 rebuild).
+    - If not: parse all recognized files, build IDFTable, save, then ingest.
+  When idf_checkpoint_path is None: no BM25 sparse encoding (backward compatible).
+
 Deterministic order
 ───────────────────
   Files are processed sorted by their derived law_id so that corpus ingestion
   is reproducible regardless of filesystem ordering.
-
-Unrecognized files
-──────────────────
-  Any .txt file whose filename does not match the _LAW_ID_MAP produces a
-  law_id starting with 'local:ru/unknown/'. These files are reported as
-  unrecognized and skipped — they are not ingested and not checkpointed.
 
 Does NOT:
   - Perform retrieval
@@ -241,6 +246,40 @@ def ingest_law_file(
 # Corpus ingestion
 # ---------------------------------------------------------------------------
 
+def _build_idf_from_files(
+    recognized_files: list[Path],
+    verbose: bool = False,
+) -> "IDFTable":  # type: ignore[name-defined]  # noqa: F821
+    """
+    Parse all recognized law files and build an IDFTable for BM25 encoding.
+
+    This is Pass 1 of the two-pass sparse ingestion pipeline.
+    """
+    from app.modules.russia.ingestion.sparse_encoder import IDFTableBuilder  # noqa: PLC0415
+
+    builder = IDFTableBuilder()
+    if verbose:
+        print(f"  [idf] Building IDF table from {len(recognized_files)} file(s)...")
+
+    for path in recognized_files:
+        try:
+            metadata, raw_text = load_law_file(path)
+            parse_result = parse_law(metadata, raw_text)
+            chunks = build_chunks(parse_result)
+            for chunk in chunks:
+                builder.add_document(chunk.text)
+        except Exception as exc:
+            log.warning("idf_build.skip_file path=%r err=%s", str(path), exc)
+
+    idf_table = builder.build()
+    if verbose:
+        print(
+            f"  [idf] IDFTable built: n_docs={idf_table.n_docs} "
+            f"vocab={idf_table.vocab_size} avg_dl={idf_table.avg_dl:.1f}"
+        )
+    return idf_table
+
+
 def ingest_corpus(
     directory: Path,
     embedding_service: EmbeddingService,
@@ -248,6 +287,7 @@ def ingest_corpus(
     qdrant_api_key: str | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     checkpoint_path: Path = DEFAULT_CHECKPOINT_FILE,
+    idf_checkpoint_path: Path | None = None,
     verbose: bool = True,
 ) -> IngestReport:
     """
@@ -262,21 +302,57 @@ def ingest_corpus(
         Files successfully ingested in a previous run are skipped.
         The checkpoint is updated after each successful file.
 
+    IDF checkpoint (Step 7):
+        When idf_checkpoint_path is provided, BM25 sparse vectors are populated:
+          - If the file exists: load IDFTable from it (no rebuild needed).
+          - If not: do Pass 1 (parse all files), build IDFTable, save, then ingest.
+        When None: sparse fields remain empty (Milestone 1 backward-compatible mode).
+
     Args:
-        directory:        Root directory to scan for .txt files
-        embedding_service: Configured EmbeddingService
-        qdrant_url:       Qdrant base URL
-        qdrant_api_key:   Optional Qdrant API key
-        batch_size:       Chunks per embed+upsert batch
-        checkpoint_path:  Path to checkpoint JSON file
-        verbose:          Print progress to stdout
+        directory:           Root directory to scan for .txt files
+        embedding_service:   Configured EmbeddingService
+        qdrant_url:          Qdrant base URL
+        qdrant_api_key:      Optional Qdrant API key
+        batch_size:          Chunks per embed+upsert batch
+        checkpoint_path:     Path to ingestion checkpoint JSON file
+        idf_checkpoint_path: Path to IDFTable JSON; enables sparse BM25 when set
+        verbose:             Print progress to stdout
 
     Returns:
         IngestReport with per-file results and aggregate counts.
     """
     t0 = time.time()
 
-    embedder = RussianLawEmbedder(embedding_service)
+    # ── Resolve BM25 encoder (optional) ─────────────────────────────────────
+    bm25_encoder = None
+    if idf_checkpoint_path is not None:
+        from app.modules.russia.ingestion.sparse_encoder import (  # noqa: PLC0415
+            IDFTable,
+            RussianBM25Encoder,
+        )
+        if idf_checkpoint_path.exists():
+            idf_table = IDFTable.load(idf_checkpoint_path)
+            if verbose:
+                print(
+                    f"  [idf] Loaded IDFTable: vocab={idf_table.vocab_size} "
+                    f"n_docs={idf_table.n_docs}"
+                )
+        else:
+            # Discover files for IDF build (all recognized files, regardless of checkpoint)
+            all_txts = sorted(directory.rglob("*.txt"))
+            from app.modules.russia.ingestion.loader import _derive_law_id  # noqa: PLC0415
+            recognized = [
+                p for p in all_txts
+                if not _derive_law_id(p.name)[0].startswith("local:ru/unknown/")
+            ]
+            idf_table = _build_idf_from_files(recognized, verbose=verbose)
+            idf_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            idf_table.save(idf_checkpoint_path)
+            if verbose:
+                print(f"  [idf] IDFTable saved to {idf_checkpoint_path}")
+        bm25_encoder = RussianBM25Encoder(idf_table)
+
+    embedder = RussianLawEmbedder(embedding_service, bm25_encoder=bm25_encoder)
     writer = RussianLawQdrantWriter(url=qdrant_url, api_key=qdrant_api_key)
 
     # ── Ensure collection exists ─────────────────────────────────────────────

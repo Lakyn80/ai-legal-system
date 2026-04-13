@@ -26,3 +26,8 @@ backend/test_qdrant.py
 test_qdrant.py
 build_rag_dataset.py
 enrich_laws.py
+
+# Local large corpora / local state artifacts
+Ruske_zakony/
+null
+LEGAL_SYSTEM_STATE_*.md

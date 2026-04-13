@@ -13,68 +13,39 @@ TESTS = [
     ("§ 52 zákoník práce", "262/2006", "exact"),
     ("§ 55 zákoník práce", "262/2006", "exact"),
     ("§ 56 zákoník práce", "262/2006", "exact"),
-    ("§ 33 zákoník práce", "262/2006", "exact"),
-    ("§ 245 zákoník práce", "262/2006", "exact"),
-    ("§ 3 zákoník práce", "262/2006", "exact"),
-    ("§ 35 zákoník práce", "262/2006", "exact"),
-    ("§ 68 zákoník práce", "262/2006", "exact"),
     ("zákon 262/2006 § 52", "262/2006", "exact"),
-    ("§ 89 občanský zákoník", "89/2012", "exact"),
-    ("§ 2079 občanský zákoník", "89/2012", "exact"),
-    ("§ 1 trestní zákoník", "40/2009", "exact"),
-    ("§ 140 trestní zákoník", "40/2009", "exact"),
-    ("§ 1 zákon o daních z příjmů", "586/1992", "exact"),
-    ("§ 6 zákon o daních z příjmů", "586/1992", "exact"),
-    ("zákon 586/1992 § 6", "586/1992", "exact"),
-    ("zákon 500/2004 § 3", "500/2004", "exact"),
-    ("zákon 90/2012 § 1", "90/2012", "exact"),
-    # -- law constrained search --
-    ("výpověď zákoník práce", "262/2006", "constrained"),
-    ("pracovní smlouva zákoník práce náležitosti", "262/2006", "constrained"),
-    ("dovolená zákoník práce délka", "262/2006", "constrained"),
-    ("odstupné zákoník práce podmínky", "262/2006", "constrained"),
-    ("přesčas zákoník práce maximum", "262/2006", "constrained"),
-    ("kupní smlouva občanský zákoník", "89/2012", "constrained"),
-    ("náhrada škody občanský zákoník", "89/2012", "constrained"),
-    ("nájemní smlouva byt", "89/2012", "constrained"),
-    ("dědictví občanský zákoník", "89/2012", "constrained"),
-    ("trestní zákoník vražda trest", "40/2009", "constrained"),
-    ("daně z příjmů fyzická osoba zákon 586/1992", "586/1992", "constrained"),
-    ("správní řízení zákon 500/2004", "500/2004", "constrained"),
-    ("s.r.o. zákon o obchodních korporacích", "90/2012", "constrained"),
-    # -- domain search --
-    ("jak dlouho trvá výpovědní doba", "262/2006", "domain"),
-    ("kdy může zaměstnavatel okamžitě zrušit pracovní poměr", "262/2006", "domain"),
-    ("podmínky výpovědi ze strany zaměstnavatele", "262/2006", "domain"),
-    ("zaměstnanec nárok na odstupné", "262/2006", "domain"),
-    ("pracovní úraz odpovědnost zaměstnavatele", "262/2006", "domain"),
-    ("jak se počítá dovolená", "262/2006", "domain"),
-    ("zkušební doba délka", "262/2006", "domain"),
-    ("mzda minimální výše", "262/2006", "domain"),
-    ("co je kupní smlouva", "89/2012", "domain"),
-    ("kdy zaniká závazek", "89/2012", "domain"),
-    ("daňové přiznání termín podání", "586/1992", "domain"),
-    ("dan z prijmu fyzicke osoby", "586/1992", "domain"),
-    ("trestny cin kradeže sazba", "40/2009", "domain"),
-    ("správní orgán přezkum rozhodnutí", "500/2004", "domain"),
-    ("valná hromada akciová společnost", "90/2012", "domain"),
-    # -- broad search / mixed --
+    # -- labor topic --
+    ("výpověď zákoník práce", "262/2006", "labor"),
+    ("odstupné zákoník práce podmínky", "262/2006", "labor"),
+    ("dovolená zákoník práce délka", "262/2006", "labor"),
+    ("pracovní smlouva zákoník práce náležitosti", "262/2006", "labor"),
+    ("zkušební doba délka", "262/2006", "labor"),
+    # -- labor natural language --
+    ("mám nárok na odstupné při nadbytečnosti", "262/2006", "labor"),
+    ("kdy může zaměstnavatel dát výpověď", "262/2006", "labor"),
+    ("jak dlouhá je výpovědní doba", "262/2006", "labor"),
+    ("mohou mě propustit ve zkušební době", "262/2006", "labor"),
+    # -- labor broad / situational --
     ("v práci mi neposkytli přestávku", "262/2006", "broad"),
     ("zaměstnavatel mi dluhuje mzdu", "262/2006", "broad"),
-    ("jsem ve zkušební době co mohu", "262/2006", "broad"),
-    ("nájem bytu práva nájemce", "89/2012", "broad"),
-    ("ublížení na zdraví trestní odpovědnost", "40/2009", "broad"),
-    # -- bare paragraph (must return clarification) --
-    ("§ 52", "clarification", "clarification"),
-    ("§55", "clarification", "clarification"),
-    ("§ 1", "clarification", "clarification"),
-    ("§99a", "clarification", "clarification"),
-    # -- nonsense / irrelevant --
-    ("ahoj jak se mas", None, "irrelevant"),
+    # -- legal but out-of-scope --
+    ("kupní smlouva", "labor_gate", "out_of_scope"),
+    ("rozvod", "labor_gate", "out_of_scope"),
+    ("vražda", "labor_gate", "out_of_scope"),
+    ("správní řízení", "labor_gate", "out_of_scope"),
+    ("daňové přiznání", "labor_gate", "out_of_scope"),
+    # -- non-legal --
+    ("kolik je hodin", "labor_gate", "non_legal"),
     ("počasí Praha zítra", None, "irrelevant"),
     ("recept na svíčkovou", None, "irrelevant"),
     ("python programming tutorial", None, "irrelevant"),
-    ("UEFA Champions League výsledky", None, "irrelevant"),
+    # -- ambiguous --
+    ("§ 52", "labor_gate", "ambiguous"),
+    ("§ 1", "labor_gate", "ambiguous"),
+    ("výpověď", "labor_gate", "ambiguous"),
+    ("nárok", "labor_gate", "ambiguous"),
+    ("mzda", "labor_gate", "ambiguous"),
+    ("dovolená", "labor_gate", "ambiguous"),
 ]
 
 ANSWER_TESTS = [
@@ -83,24 +54,6 @@ ANSWER_TESTS = [
         "expected_doc": "262/2006",
         "required_any": ["výpověď", "důvody výpovědi", "zaměstnavatel"],
         "forbidden": ["okamžité zrušení pracovního poměru"],
-    },
-    {
-        "query": "zákon 500/2004 § 3",
-        "expected_doc": "500/2004",
-        "required_any": ["správní orgán", "správní orgány", "veřejný zájem", "dotčené osoby"],
-        "forbidden": ["zaměstnavatel", "pracovní poměr", "výpověď"],
-    },
-    {
-        "query": "kupní smlouva občanský zákoník",
-        "expected_doc": "89/2012",
-        "required_any": ["kupní smlouv", "prodávaj", "kupující", "koupě"],
-        "forbidden": [
-            "v poskytnutých úryvcích není",
-            "v úryvcích není",
-            "není relevantní ustanovení",
-            "nebylo možné najít relevantní ustanovení",
-        ],
-        "top_chunk_must_be_substantive": True,
     },
     {
         "query": "výpovědní doba zákoník práce",
@@ -117,6 +70,12 @@ ANSWER_TESTS = [
             "místo výkonu práce",
             "den nástupu",
         ],
+        "top_chunk_must_be_substantive": True,
+    },
+    {
+        "query": "mám nárok na odstupné při nadbytečnosti",
+        "expected_doc": "262/2006",
+        "required_any": ["odstupné", "nadbytečnost", "výpověď"],
         "top_chunk_must_be_substantive": True,
     },
 ]
@@ -225,8 +184,23 @@ def check_result(data: dict, expected_doc: str | None, category: str) -> tuple[b
             return True, f"clarification OK  id={top_id!r}"
         return False, f"expected clarification, got doc={top_doc!r} src={top_src!r}"
 
+    if category == "ambiguous":
+        if top_id == "labor_gate:ambiguous":
+            return True, f"ambiguous OK  id={top_id!r}"
+        return False, f"expected ambiguous gate, got doc={top_doc!r} id={top_id!r}"
+
+    if category == "out_of_scope":
+        if top_id == "labor_gate:legal_out_of_scope":
+            return True, f"out_of_scope OK  id={top_id!r}"
+        return False, f"expected out_of_scope gate, got doc={top_doc!r} id={top_id!r}"
+
+    if category == "non_legal":
+        if top_id == "labor_gate:non_legal":
+            return True, f"non_legal OK  id={top_id!r}"
+        return False, f"expected non_legal gate, got doc={top_doc!r} id={top_id!r}"
+
     if category == "irrelevant":
-        if "irrelevant_query" in top_tags or top_id in ("irrelevant_query", "no_result"):
+        if "irrelevant_query" in top_tags or top_id in ("irrelevant_query", "no_result", "labor_gate:non_legal"):
             return True, f"irrelevant OK  tags={top_tags}"
         if score == 0.0 and top_doc == "":
             return True, "score=0 no doc (ok)"

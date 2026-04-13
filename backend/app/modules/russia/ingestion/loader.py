@@ -52,6 +52,9 @@ _LAW_ID_MAP: list[tuple[str, str, str]] = [
     ("бюджетный кодекс",                  "local:ru/bk",     "БК РФ"),
     ("таможенный кодекс",                 "local:ru/tk_eaes","ТК ЕАЭС"),
     ("конституция",                       "local:ru/konst",  "Конституция РФ"),
+    # International conventions and specific federal laws
+    ("конвенция о защите прав",           "local:ru/echr",   "ЕКПЧ"),
+    ("115-фз",                            "local:ru/fl115",  "ФЗ-115"),
     # Federal laws by number — extracted from filename if present
     # Matched as fallback for ФЗ files that don't have a code name
 ]
