@@ -178,6 +178,41 @@ New models:
 - `BatchSearchRequest` — `queries: list[SearchRequest]`
 - `BatchSearchAnswerResponse` — `results: list[SearchAnswerResponse]`
 
+#### Russia Retrieval Hardening (deterministic anchors)
+
+Russian taxonomy-first retrieval now has a deterministic safety layer for supported procedural/alimony issue clusters.
+
+**What is guaranteed**
+
+- If a supported issue is detected (`interpreter_issue`, `language_issue`, `notice_issue`, `service_address_issue`, `foreign_party_issue`, `alimony_issue`, `alimony_debt_issue`, `alimony_enforcement_issue`), response must never be empty.
+- If retrieval candidates are empty/insufficient, backend injects canonical legal anchors directly (not another best-effort search attempt).
+- Fallback is index-independent: when no chunk is available, API returns canonical reference rows with:
+  - `law_id`
+  - `law_short`
+  - `article_num`
+  - `article_heading` (if available in taxonomy)
+  - `source = deterministic_anchor_fallback`
+- Fallback metadata is explicit and consistent:
+  - `fallback_applied`
+  - `fallback_reason` (`no_taxonomy_candidates`, `retrieval_empty`, `retrieval_below_threshold`, `deterministic_anchor_injection`)
+- Result dedup is enforced by `(law_id, article_num)` to avoid duplicate chunks dominating top output.
+
+**Anchor guarantees**
+
+- `interpreter_issue` → `ГПК 9`, `ГПК 162`
+- `language_issue` → `ГПК 9`
+- `notice_issue` → `ГПК 113`
+- `service_address_issue` → notice/service cluster (`ГПК 113` minimum)
+- `foreign_party_issue` → `ГПК 9`, `ГПК 162`
+- `alimony_issue` → `СК 80`, `СК 81`
+- `alimony_debt_issue` → canonical debt anchors (`СК 113` minimum)
+- `alimony_enforcement_issue` → canonical enforcement anchors (`СК 113` minimum)
+
+**Live verification**
+
+- Real endpoint smoke run (`POST /api/russia/search`) across 9 production-like Russian formulations: **PASS 9 / FAIL 0**.
+- Response payload now includes per-result `source` and top-level fallback metadata for auditability.
+
 #### LLM Provider — DeepSeek
 
 `BaseLLMProvider` now has three implementations:
@@ -279,7 +314,7 @@ docker cp backend/run_tests.py ai-legal-backend:/app/run_tests.py
 
 5. **End-to-end CI test** — compose-backed smoke test in GitHub Actions hitting the live API.
 
-6. **Russia jurisdiction** — scaffold only, retrieval pipeline not built yet.
+6. **Russia jurisdiction** — deterministic taxonomy-first procedural/alimony anchor guarantees are implemented; next steps are broader corpus/topic expansion and additional end-to-end CI smoke coverage.
 
 ---
 

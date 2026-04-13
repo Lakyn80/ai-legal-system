@@ -113,6 +113,7 @@ class SearchResultOut(BaseModel):
     article_heading: str | None
     text: str
     is_tombstone: bool
+    source: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -123,6 +124,8 @@ class SearchOut(BaseModel):
     mode: str
     issue_flags: list[str] = []
     taxonomy_applied: bool = False
+    fallback_applied: bool = False
+    fallback_reason: str | None = None
     result_count: int
     results: list[SearchResultOut]
 
@@ -231,6 +234,7 @@ def _result_to_out(r) -> SearchResultOut:
         article_heading=r.article_heading,
         text=r.text,
         is_tombstone=r.is_tombstone,
+        source=getattr(r, "source_type", None),
     )
 
 
@@ -335,6 +339,8 @@ def search(
         mode=request.mode,
         issue_flags=outcome.issue_flags,
         taxonomy_applied=outcome.taxonomy_applied,
+        fallback_applied=outcome.fallback_applied,
+        fallback_reason=outcome.fallback_reason,
         result_count=len(raw),
         results=[_result_to_out(r) for r in raw],
     )

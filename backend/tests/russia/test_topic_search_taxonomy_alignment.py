@@ -74,8 +74,18 @@ def _build_fake_service() -> RussianRetrievalService:
             _result(law_id="local:ru/gpk", article="113", score=0.46),
             _result(law_id="local:ru/gpk", article="9", score=0.41),
             _result(law_id="local:ru/gpk", article="162", score=0.40),
+            _result(law_id="local:ru/gpk", article="10", score=0.99),
+            _result(law_id="local:ru/gpk", article="327.1", score=0.98),
+            _result(law_id="local:ru/gpk", article="425", score=0.97),
+            _result(law_id="local:ru/gpk", article="427.3", score=0.96),
+            _result(law_id="local:ru/gpk", article="63.1", score=0.95),
         ],
-        "local:ru/gk/1": [_result(law_id="local:ru/gk/1", article="260", score=0.95)],
+        "local:ru/gk/1": [
+            _result(law_id="local:ru/gk/1", article="260", score=0.95),
+            _result(law_id="local:ru/gk/1", article="279", score=0.94),
+            _result(law_id="local:ru/gk/1", article="286", score=0.93),
+            _result(law_id="local:ru/gk/1", article="274", score=0.92),
+        ],
         "local:ru/echr": [_result(law_id="local:ru/echr", article="6", score=0.2)],
     }
     svc = RussianRetrievalService.__new__(RussianRetrievalService)
@@ -158,3 +168,29 @@ def test_non_topic_paths_align_with_api(
     client: TestClient,
 ):
     _compare_non_topic_alignment(query, mode, fake_service, client)
+
+
+def test_service_non_topic_language_excludes_unrelated_gpk(fake_service: RussianRetrievalService):
+    rows = fake_service.hybrid_search("я не понимал язык судебного заседания", top_k=5)
+    top3 = {r.article_num for r in rows[:3]}
+    assert top3 & {"9", "162"}
+    assert not (top3 & {"425", "427.3", "63.1"})
+
+
+def test_service_non_topic_notice_excludes_unrelated(fake_service: RussianRetrievalService):
+    rows = fake_service.hybrid_search("я не был уведомлен о судебном заседании", top_k=5)
+    top3 = {r.article_num for r in rows[:3]}
+    assert "113" in {r.article_num for r in rows}
+    assert not (top3 & {"10", "327.1", "279"})
+
+
+def test_service_non_topic_combined_notice_alimony(fake_service: RussianRetrievalService):
+    rows = fake_service.hybrid_search(
+        "суд взыскал алименты без моего участия и без уведомления",
+        top_k=6,
+    )
+    laws = {r.law_id for r in rows}
+    assert "local:ru/sk" in laws
+    assert "local:ru/gpk" in laws
+    top3 = {r.article_num for r in rows[:3]}
+    assert not (top3 & {"286", "274"})
