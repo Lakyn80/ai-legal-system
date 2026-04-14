@@ -376,7 +376,7 @@ RUSSIA_FOCUS_DATASET = FocusTaxonomyDataset(
                 "international_judicial_assistance",
                 "service_of_process",
             ],
-            issue_flags=["foreign_service_issue", "foreign_party_issue"],
+            issue_flags=["foreign_service_issue"],
             retrieval_keywords_ru=[
                 "судебные поручения иностранным судам",
                 "вручение извещений за рубежом",

@@ -143,6 +143,11 @@ def taxonomy_first_search(
         initial_rows=ranked,
     )
     if fallback_rows:
+        # Post-check: for each detected issue, ensure its primary anchor is present.
+        # This guards against the case where fallback satisfied the combined anchor check
+        # (e.g. via service_address_issue GPK 113) but left out the primary anchor of a
+        # co-detected issue (e.g. foreign_service_issue GPK 407 or deadline GPK 112).
+        fallback_rows = _ensure_per_issue_primary_anchors(taxonomy, issue_flags, fallback_rows, top_k)
         used_deterministic = any(getattr(row, "source_type", "") == "deterministic_anchor_fallback" for row in fallback_rows)
         return TaxonomySearchOutcome(
             results=fallback_rows,
@@ -277,7 +282,25 @@ def _resolve_fallback_rows(
     allowed_laws = {law for law, _ in guaranteed_anchor_keys}
     for r in candidate_rows:
         allowed_laws.add(r.law_id)
-    tail = [row for row in deduped if row not in anchors and (not allowed_laws or row.law_id in allowed_laws)]
+
+    # Restrict tail to taxonomy-approved article keys.
+    # When candidate_rows is populated (retrieval_below_threshold / retrieval_empty), only
+    # articles that are in the taxonomy candidate set belong in the tail — this prevents the
+    # fallback from leaking unrelated articles (e.g. GPK 438, GPK 79, SK 84) that happen to
+    # have high dense-retrieval scores but are doctrinally irrelevant to the detected issues.
+    # When candidate_rows is empty (no_taxonomy_candidates), fall back to law-level filter.
+    guaranteed_key_set = {(law_id, article_num) for law_id, article_num in guaranteed_anchor_keys}
+    candidate_article_keys: set[tuple[str, str]] = {
+        (r.law_id, str(r.article_num or "")) for r in candidate_rows
+    }
+    tail = [
+        row for row in deduped
+        if (row.law_id, str(row.article_num or "")) not in guaranteed_key_set
+        and (
+            (candidate_article_keys and (row.law_id, str(row.article_num or "")) in candidate_article_keys)
+            or (not candidate_article_keys and (not allowed_laws or row.law_id in allowed_laws))
+        )
+    ]
     tail.sort(key=lambda x: x.score, reverse=True)
 
     final_rows = _dedupe_by_article(anchors + tail)
@@ -326,3 +349,39 @@ def _inject_deterministic_anchor_references(
         )
     deduped = _dedupe_by_article(out)
     return deduped[:top_k]
+
+
+def _ensure_per_issue_primary_anchors(
+    taxonomy: FocusLegalTaxonomyService,
+    issue_flags: list[str],
+    rows: list[RussianSearchResult],
+    top_k: int,
+) -> list[RussianSearchResult]:
+    """
+    Post-processing guarantee: for each detected issue, ensure its first (primary)
+    guaranteed anchor is present in the result set.
+
+    This handles the case where the combined-anchor check passes via one issue's
+    anchor (e.g. GPK 113 from notice_issue) but leaves out the primary anchor of
+    a co-detected issue (e.g. GPK 407 for foreign_service_issue, GPK 112 for
+    missed_deadline_due_to_service_issue).
+
+    Missing anchors are injected as deterministic_anchor_fallback references.
+    """
+    seen = {(r.law_id, str(r.article_num or "")) for r in rows}
+    missing: list[tuple[str, str]] = []
+    for issue in issue_flags:
+        issue_anchors = _ISSUE_ANCHOR_GUARANTEES.get(issue, ())
+        if not issue_anchors:
+            continue
+        # Only require the FIRST (primary) anchor per issue to keep results tight
+        primary = issue_anchors[0]
+        if primary not in seen:
+            missing.append(primary)
+
+    if not missing:
+        return rows
+
+    injected = _inject_deterministic_anchor_references(taxonomy, missing, len(missing))
+    combined = _dedupe_by_article(injected + rows)
+    return combined[:top_k]
