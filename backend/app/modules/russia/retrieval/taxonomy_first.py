@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import cast
 
 from app.modules.common.legal_taxonomy.service import FocusLegalTaxonomyService
 from app.modules.russia.retrieval.schemas import RussianSearchResult
@@ -21,29 +22,40 @@ _ISSUE_ANCHOR_GUARANTEES: dict[str, tuple[tuple[str, str], ...]] = {
     "interpreter_issue": (("local:ru/gpk", "9"), ("local:ru/gpk", "162")),
     "language_issue": (("local:ru/gpk", "9"),),
     "notice_issue": (("local:ru/gpk", "113"),),
-    "service_address_issue": (("local:ru/gpk", "113"),),
-    "foreign_party_issue": (("local:ru/gpk", "9"), ("local:ru/gpk", "162")),
+    "service_address_issue": (("local:ru/gpk", "116"), ("local:ru/gpk", "113")),
+    "foreign_party_issue": (("local:ru/gpk", "9"), ("local:ru/gpk", "398"), ("local:ru/gpk", "162")),
+    "appellate_reversal_issue": (("local:ru/gpk", "330"),),
+    "foreign_service_issue": (("local:ru/gpk", "407"), ("local:ru/gpk", "398")),
     "alimony_issue": (("local:ru/sk", "80"), ("local:ru/sk", "81")),
-    "alimony_debt_issue": (("local:ru/sk", "113"),),
-    "alimony_enforcement_issue": (("local:ru/sk", "113"),),
+    "alimony_debt_issue": (("local:ru/sk", "113"), ("local:ru/sk", "114")),
+    "alimony_enforcement_issue": (("local:ru/sk", "113"), ("local:ru/sk", "114"), ("local:ru/sk", "115")),
+    "alimony_exemption_issue": (("local:ru/sk", "114"),),
+    "missed_deadline_due_to_service_issue": (("local:ru/gpk", "112"),),
+    # Recognition/enforcement of foreign court decisions is a separate cluster
+    # from foreign service of Russian proceedings (GPK 407).
+    "recognition_enforcement_issue": (
+        ("local:ru/gpk", "409"),
+        ("local:ru/gpk", "410"),
+        ("local:ru/gpk", "411"),
+    ),
 }
 
 
 def run_mode_search(svc, mode: str, query: str, law_id: str | None, top_k: int) -> list[RussianSearchResult]:
     base = getattr(svc, "_taxonomy_base_search", None)
     if callable(base):
-        return base(mode=mode, query=query, law_id=law_id, top_k=top_k)
+        return cast(list[RussianSearchResult], base(mode=mode, query=query, law_id=law_id, top_k=top_k))
 
     if mode == "dense":
-        return svc.search(query, law_id=law_id, top_k=top_k)
+        return cast(list[RussianSearchResult], svc.search(query, law_id=law_id, top_k=top_k))
     if mode == "sparse":
-        return svc.sparse_search(query, law_id=law_id, top_k=top_k)
+        return cast(list[RussianSearchResult], svc.sparse_search(query, law_id=law_id, top_k=top_k))
     if mode == "topic":
-        raw = svc.topic_search(query, top_k=max(top_k * 4, top_k))
+        raw = cast(list[RussianSearchResult], svc.topic_search(query, top_k=max(top_k * 4, top_k)))
         if law_id is None:
             return raw[:top_k]
         return [r for r in raw if r.law_id == law_id][:top_k]
-    return svc.hybrid_search(query, law_id=law_id, top_k=top_k)
+    return cast(list[RussianSearchResult], svc.hybrid_search(query, law_id=law_id, top_k=top_k))
 
 
 def taxonomy_first_search(

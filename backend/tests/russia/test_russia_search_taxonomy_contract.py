@@ -42,11 +42,30 @@ class FakeRussianRetrievalService:
                 _result(law_id="local:ru/sk", article="80", score=0.4),
                 _result(law_id="local:ru/sk", article="81", score=0.35),
                 _result(law_id="local:ru/sk", article="113", score=0.31),
+                _result(law_id="local:ru/sk", article="114", score=0.30),
+                _result(law_id="local:ru/sk", article="115", score=0.28),
+                _result(law_id="local:ru/sk", article="107", score=0.26),
+                _result(law_id="local:ru/sk", article="117", score=0.22),
             ],
             "local:ru/gpk": [
                 _result(law_id="local:ru/gpk", article="113", score=0.45),
                 _result(law_id="local:ru/gpk", article="9", score=0.2),
                 _result(law_id="local:ru/gpk", article="162", score=0.21),
+                # New taxonomy articles — realistic mid-range scores
+                _result(law_id="local:ru/gpk", article="112", score=0.36),
+                _result(law_id="local:ru/gpk", article="116", score=0.34),
+                _result(law_id="local:ru/gpk", article="117", score=0.32),
+                _result(law_id="local:ru/gpk", article="330", score=0.38),
+                _result(law_id="local:ru/gpk", article="398", score=0.33),
+                _result(law_id="local:ru/gpk", article="407", score=0.37),
+                _result(law_id="local:ru/gpk", article="409", score=0.41),
+                _result(law_id="local:ru/gpk", article="410", score=0.40),
+                _result(law_id="local:ru/gpk", article="411", score=0.39),
+                _result(law_id="local:ru/gpk", article="412", score=0.35),
+                # Noisy unrelated articles — intentionally HIGH scores to prove taxonomy filtering works.
+                # GPK 329 is the key regression sentinel: it should NEVER appear in core results
+                # because it only describes the form of the appellate ruling (not reversal grounds).
+                _result(law_id="local:ru/gpk", article="329", score=0.98),
                 _result(law_id="local:ru/gpk", article="10", score=0.99),
                 _result(law_id="local:ru/gpk", article="327.1", score=0.95),
                 _result(law_id="local:ru/gpk", article="425", score=0.94),
@@ -300,6 +319,11 @@ def test_foreign_tourist_phrase_triggers_fallback_with_gpk_language_anchors(clie
         ("суд взыскал алименты без моего участия и без уведомления", "alimony_issue", ("local:ru/sk", "80")),
         ("приставы взыскивают задолженность по алиментам", "alimony_enforcement_issue", ("local:ru/sk", "113")),
         ("я был там только как турист", "foreign_party_issue", ("local:ru/gpk", "9")),
+        # New clusters — added 2026-04-13 after legal audit
+        ("основания для отмены решения суда", "appellate_reversal_issue", ("local:ru/gpk", "330")),
+        ("по чешскому адресу мне не направили документы суда", "foreign_service_issue", ("local:ru/gpk", "407")),
+        ("пропустил срок обжалования так как не получил решение суда", "missed_deadline_due_to_service_issue", ("local:ru/gpk", "112")),
+        ("признание и исполнение решения иностранного суда", "recognition_enforcement_issue", ("local:ru/gpk", "409")),
     ],
 )
 def test_deterministic_anchor_injection_when_retrieval_returns_nothing(
@@ -323,3 +347,174 @@ def test_deterministic_anchor_injection_when_retrieval_returns_nothing(
     pairs = {(item["law_id"], item["article_num"]) for item in d["results"]}
     assert required_anchor in pairs
     assert all(item.get("source") == "deterministic_anchor_fallback" for item in d["results"])
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — legal correctness guard
+# These tests exist to prevent specific retrieval regressions identified in
+# the legal audit of 2026-04-13. Each test documents an exact past failure mode.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "основания для отмены решения суда",
+        "обжалование по процессуальным нарушениям",
+        "суд рассмотрел дело в моё отсутствие без уведомления и решение подлежит отмене",
+        "апелляция из-за нарушения процедуры извещения",
+    ],
+)
+def test_regression_gpk_330_present_329_absent_for_appellate_reversal(
+    client: TestClient, query: str
+):
+    """
+    REGRESSION: GPK 329 (form of appellate ruling) must never appear instead of
+    GPK 330 (grounds for mandatory reversal). GPK 330 is the correct anchor for
+    appellate challenges based on improper notice or language violations.
+    GPK 329 scores 0.98 in the fake DB — it will win WITHOUT taxonomy filtering.
+    This test proves the taxonomy correctly blocks it and surfaces 330 instead.
+    """
+    r = client.post("/api/russia/search", json={"query": query, "mode": "hybrid", "top_k": 5})
+    assert r.status_code == 200
+    d = r.json()
+    arts = {x["article_num"] for x in d["results"]}
+    assert "330" in arts, f"GPK 330 must be present for appellate reversal query: {query!r}"
+    assert "329" not in arts, (
+        f"GPK 329 (form of appellate ruling) must NOT appear for: {query!r}. "
+        "This is a legal retrieval regression — GPK 330 is the correct anchor."
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "повестка была отправлена по адресу регистрации где я не проживал",
+        "извещение направили не по моему фактическому адресу проживания",
+    ],
+)
+def test_regression_service_address_cluster_includes_gpk_116(
+    client: TestClient, query: str
+):
+    """
+    REGRESSION: service_address_issue must surface GPK 116 (physical delivery rules).
+    GPK 116 defines WHERE and TO WHOM the summons must be physically delivered.
+    Without it, the service defect argument lacks its direct legal foundation.
+    """
+    r = client.post("/api/russia/search", json={"query": query, "mode": "hybrid", "top_k": 5})
+    assert r.status_code == 200
+    d = r.json()
+    assert "service_address_issue" in d["issue_flags"]
+    arts = {x["article_num"] for x in d["results"]}
+    assert "116" in arts, (
+        f"GPK 116 (delivery rules) must be present for service address query: {query!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "по чешскому адресу мне не направили документы суда",
+        "вручение за рубежом не было произведено по международному договору",
+        "документы должны были направить через международную правовую помощь",
+    ],
+)
+def test_regression_foreign_service_cluster_includes_gpk_407_and_398(
+    client: TestClient, query: str
+):
+    """
+    REGRESSION: foreign_service_issue must surface both GPK 407 (letters rogatory /
+    international judicial assistance) and GPK 398 (procedural rights of foreign persons).
+    GPK 407 is the direct basis for the argument that service to a Czech address requires
+    official international channels. GPK 398 establishes equal rights for foreign nationals.
+    """
+    r = client.post("/api/russia/search", json={"query": query, "mode": "hybrid", "top_k": 5})
+    assert r.status_code == 200
+    d = r.json()
+    assert "foreign_service_issue" in d["issue_flags"]
+    arts = {x["article_num"] for x in d["results"]}
+    assert "407" in arts, (
+        f"GPK 407 (international service) must be present for: {query!r}"
+    )
+    assert "398" in arts, (
+        f"GPK 398 (foreign party rights) must be present for: {query!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "пропустил срок обжалования так как не получил решение суда",
+        "восстановление срока на подачу жалобы из-за ненадлежащего извещения",
+        "срок пропущен по причине отсутствия извещения о решении",
+    ],
+)
+def test_regression_missed_deadline_cluster_includes_gpk_112(
+    client: TestClient, query: str
+):
+    """
+    REGRESSION: missed_deadline_due_to_service_issue must surface GPK 112
+    (restoration of procedural deadlines). This is the direct legal basis for
+    a defendant to request restoration of the missed appellate deadline when
+    non-service caused them to miss it.
+    """
+    r = client.post("/api/russia/search", json={"query": query, "mode": "hybrid", "top_k": 5})
+    assert r.status_code == 200
+    d = r.json()
+    assert "missed_deadline_due_to_service_issue" in d["issue_flags"]
+    arts = {x["article_num"] for x in d["results"]}
+    assert "112" in arts, (
+        f"GPK 112 (deadline restoration) must be present for: {query!r}"
+    )
+
+
+def test_regression_gpk_329_never_appears_for_notice_language_interpreter(
+    client: TestClient,
+):
+    """
+    REGRESSION: GPK 329 (form of appellate ruling) must not appear as a core result
+    for any of the procedural defect clusters: notice, language, interpreter.
+    GPK 329 has score 0.98 in the fake DB (intentionally highest) — this test
+    proves the taxonomy candidate filtering blocks it across all defect query types.
+    """
+    defect_queries = [
+        "я не был уведомлен о судебном заседании",
+        "мне не предоставили переводчика в суде",
+        "я не понимал язык судебного заседания",
+        "повестка была отправлена на адрес регистрации где я не жил",
+    ]
+    for query in defect_queries:
+        r = client.post("/api/russia/search", json={"query": query, "mode": "hybrid", "top_k": 5})
+        assert r.status_code == 200
+        d = r.json()
+        arts = {x["article_num"] for x in d["results"]}
+        assert "329" not in arts, (
+            f"GPK 329 must never appear for procedural defect query: {query!r}. "
+            "It only describes the form of the appellate ruling and is legally irrelevant here."
+        )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "признание и исполнение решения иностранного суда",
+        "ходатайство о принудительном исполнении решения чешского суда",
+        "отказ в признании иностранного судебного решения",
+    ],
+)
+def test_regression_recognition_enforcement_cluster_uses_409_411_not_407(
+    client: TestClient, query: str
+):
+    """
+    Recognition/enforcement of foreign judgments must use GPK 409-411 anchors,
+    not be mixed into foreign service mechanics (GPK 407).
+    """
+    r = client.post("/api/russia/search", json={"query": query, "mode": "hybrid", "top_k": 6})
+    assert r.status_code == 200
+    d = r.json()
+    assert "recognition_enforcement_issue" in d["issue_flags"]
+    arts = {x["article_num"] for x in d["results"]}
+    assert arts & {"409", "410", "411"}
+    assert "407" not in arts, (
+        f"GPK 407 must not dominate recognition/enforcement cluster for query: {query!r}"
+    )

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from app.core.config import Settings, get_settings
 
 if TYPE_CHECKING:
+    from app.modules.common.agents.agent2_legal_strategy.service import LegalStrategyAgent2Service
     from app.modules.common.cache.admin_service import CacheAdminService
     from app.modules.common.cache.client import RedisCacheClient
     from app.modules.common.cache.exact_cache import ExactCacheService
@@ -163,6 +164,17 @@ def get_llm_provider():
     from app.modules.common.llm.provider import build_llm_provider
 
     return build_llm_provider(get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_agent2_legal_strategy_service() -> LegalStrategyAgent2Service:
+    from app.modules.common.agents.agent2_legal_strategy.service import LegalStrategyAgent2Service
+
+    settings = get_settings()
+    return LegalStrategyAgent2Service(
+        get_llm_provider(),
+        model_name=settings.llm_model,
+    )
 
 
 @lru_cache(maxsize=1)

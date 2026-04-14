@@ -9,8 +9,14 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.dependencies import get_russian_retrieval_service
+from app.core.dependencies import get_agent2_legal_strategy_service, get_russian_retrieval_service
 from app.main import app
+from app.modules.common.agents.agent2_legal_strategy.errors import Agent2OutputContractError
+from app.modules.common.agents.agent2_legal_strategy.schemas import (
+    LegalStrategyAgent2Output,
+    MissingEvidenceBlock,
+    StrategicAssessmentBlock,
+)
 from app.modules.russia.retrieval.schemas import (
     ArticleLookupResult,
     RussianChunkResult,
@@ -119,11 +125,34 @@ class FakeRussianRetrievalService:
         return [_search_hit(score=0.7)]
 
 
+class FakeAgent2Service:
+    def run(self, inp, *, config=None):
+        if inp.case_id == "bad":
+            raise Agent2OutputContractError("bad citation", violations=["x"])
+
+        class _RunResult:
+            def __init__(self):
+                self.output = LegalStrategyAgent2Output(
+                    case_theory="Core procedural defects around language and notice.",
+                    primary_legal_basis=[],
+                    supporting_legal_basis=[],
+                    fact_to_law_mapping=[],
+                    strategic_assessment=StrategicAssessmentBlock(),
+                    missing_evidence_gaps=MissingEvidenceBlock(),
+                    recommended_next_steps=[],
+                    draft_argument_direction="The case should argue procedural guarantees were violated.",
+                    insufficient_support_items=[],
+                )
+
+        return _RunResult()
+
+
 @pytest.fixture
 def client():
     startup_handlers = list(app.router.on_startup)
     app.router.on_startup.clear()
     app.dependency_overrides[get_russian_retrieval_service] = lambda: FakeRussianRetrievalService()
+    app.dependency_overrides[get_agent2_legal_strategy_service] = lambda: FakeAgent2Service()
     try:
         with TestClient(app) as tc:
             yield tc
@@ -207,5 +236,55 @@ def test_openapi_includes_russia_paths_and_tags(client: TestClient):
     assert "/api/russia/article" in paths
     assert "/api/russia/search" in paths
     assert "/api/russia/interpreter-issue" in paths
+    assert "/api/russia/strategy" in paths
     tags = paths["/api/russia/article"]["get"].get("tags", [])
     assert "russia" in tags
+
+
+def test_post_strategy_returns_agent2_output(client: TestClient):
+    payload = {
+        "input": {
+            "case_id": "C-1",
+            "jurisdiction": "Russia",
+            "cleaned_summary": "No interpreter and no notice.",
+            "facts": ["Foreign citizen", "No interpreter"],
+            "issue_flags": ["interpreter_issue", "notice_issue"],
+            "claims_or_questions": ["Build defense strategy."],
+            "legal_evidence_pack": {
+                "primary_sources": [{"law": "GPK RF", "article": "9"}],
+                "supporting_sources": [{"law": "ECHR", "article": "6"}],
+                "retrieved_articles": [{"law": "GPK RF", "article": "9", "excerpt": "Proceedings in Russian"}],
+                "matched_issues": ["interpreter_issue"],
+                "retrieval_notes": ["test"],
+            },
+        },
+        "strict_reliability": True,
+        "max_repair_attempts": 1,
+    }
+    r = client.post("/api/russia/strategy", json=payload)
+    assert r.status_code == 200
+    data = r.json()
+    assert "output" in data
+    assert data["output"]["case_theory"]
+    assert data["output"]["draft_argument_direction"]
+
+
+def test_post_strategy_contract_error_returns_422(client: TestClient):
+    payload = {
+        "input": {
+            "case_id": "bad",
+            "jurisdiction": "Russia",
+            "cleaned_summary": "x",
+            "legal_evidence_pack": {
+                "primary_sources": [],
+                "supporting_sources": [],
+                "retrieved_articles": [],
+                "matched_issues": [],
+                "retrieval_notes": [],
+            },
+        }
+    }
+    r = client.post("/api/russia/strategy", json=payload)
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["code"] == "agent2_output_contract_violation"

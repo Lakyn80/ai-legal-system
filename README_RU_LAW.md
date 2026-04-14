@@ -1774,6 +1774,195 @@ then hybrid/dense/sparse ranking.
 - **Search taxonomy contract** (`test_russia_search_taxonomy_contract.py`): **VERIFIED**
 - Combined contract run (`test_russia_api_contract.py`, taxonomy tests, alignment tests): **VERIFIED** (22 passed in latest run)
 
+## Step 16 — Agent 2 closed-evidence endpoint for Russia (COMPLETED 2026-04-14)
+
+### Goal
+
+Expose the new Agent 2 legal strategy contract for Russian workflow under a dedicated route, separate from generic `/api/strategy/generate`.
+
+### Implemented
+
+- Added DI provider in `backend/app/core/dependencies.py`:
+  - `get_agent2_legal_strategy_service()`
+- Extended Russian API route module `backend/app/api/routes/russia.py`:
+  - new endpoint `POST /api/russia/strategy`
+  - request wrapper:
+    - `input: LegalStrategyAgent2Input`
+    - `strict_reliability` (default `true`)
+    - `max_repair_attempts` (default `1`)
+  - response wrapper:
+    - `output: LegalStrategyAgent2Output`
+  - controlled failure path: Agent2 contract/validation/invocation errors return HTTP `422` with stable `code + message`
+- Added contract coverage in `backend/tests/russia/test_russia_api_contract.py`:
+  - OpenAPI contains `/api/russia/strategy`
+  - happy-path Agent2 response shape
+  - 422 mapping for contract violation
+
+### Verification
+
+- Targeted tests run and passed:
+  - `backend/tests/russia/test_russia_api_contract.py`
+  - `backend/tests/agents/test_agent2_legal_strategy.py`
+  - `backend/tests/agents/test_agent2_evidence_contract.py`
+
+---
+
+## Step 17 — Runtime diagnosis + deploy fix for missing `/api/russia/strategy` (COMPLETED 2026-04-14)
+
+### Goal
+
+Prove exactly why `http://localhost:8032` originally returned 404 for `/api/russia/strategy`, then bring runtime to the correct backend version and validate end-to-end closed-evidence flow.
+
+### Findings (hard evidence)
+
+- `localhost:8032` was served by Docker container:
+  - name: `ai-legal-backend`
+  - image: `ai-legal-system-backend`
+  - port mapping: `8032 -> 8000`
+- OpenAPI on `8032` initially showed:
+  - `/api/russia/search` present
+  - `/api/russia/strategy` missing
+- Inside running container (`/app/app/api/routes/russia.py`) before rebuild:
+  - `has_strategy_route=False`
+  - `has_agent2_dep=False`
+
+Root cause: running backend container used an older image layer without Step 16 route code.
+
+### Action taken
+
+- Minimal deploy step (backend only):
+  - `docker compose up -d --build backend`
+- Post-rebuild evidence:
+  - OpenAPI on `http://localhost:8032/openapi.json` includes both:
+    - `/api/russia/search`
+    - `/api/russia/strategy`
+  - inside container route file:
+    - `has_strategy_route=True`
+    - `has_agent2_dep=True`
+
+### End-to-end integration verification
+
+The cross-repo integration script in `ai-legal-case-rag-service` was executed in strict closed-evidence mode:
+
+`case_summary.v1 -> /api/russia/search (Agent 1) -> legal_evidence_pack -> /api/russia/strategy (Agent 2)`
+
+Final run status:
+
+- Agent 1 (`/api/russia/search`): HTTP `200`
+- Agent 2 (`/api/russia/strategy`): HTTP `200`
+- Strategy output returned full structured sections:
+  - `case_theory`
+  - `primary_legal_basis`
+  - `fact_to_law_mapping`
+  - `strategic_assessment`
+  - `missing_evidence_gaps`
+  - `recommended_next_steps`
+  - `draft_argument_direction`
+
+---
+
+## Step 18 — Foreign service vs recognition split (409–411 cluster correction) (COMPLETED 2026-04-14)
+
+### Goal
+
+Correct legal clustering so GPK `409–411` are NOT mixed into `foreign_service_issue`.
+The intended split:
+
+- `foreign_service_issue` → service of Russian proceedings abroad (`ГПК 407`, support `ГПК 398`)
+- `recognition_enforcement_issue` → recognition/enforcement of foreign judgments in Russia (`ГПК 409–411`, support `ГПК 412`)
+
+### Why this matters
+
+Mixing `409–411` into `foreign_service_issue` causes doctrinal drift:
+
+- service mechanics (how to notify defendant abroad) and
+- recognition/enforcement mechanics (how to recognize/enforce foreign judgment in Russia)
+
+are different procedural tracks.
+
+### Implemented
+
+- `backend/app/modules/common/legal_taxonomy/russia_focus_taxonomy.py`
+  - Added GPK articles `117`, `112`, `330`, `398`, `407`
+  - Added dedicated recognition/enforcement anchors:
+    - `409`, `410`, `411`, `412`
+  - Mapped `409–412` under `issue_flags=["recognition_enforcement_issue"]`
+  - Kept `407` under `foreign_service_issue` (not recognition)
+- `backend/app/modules/common/legal_taxonomy/service.py`
+  - Added issue detection rule `recognition_enforcement_issue`
+  - Added topic mapping: `recognition_enforcement_issue -> recognition_enforcement`
+  - Tightened `foreign_party_issue` stem matching to avoid false positives on
+    phrases like `"иностранного решения"` in recognition queries
+- `backend/app/modules/russia/retrieval/taxonomy_first.py`
+  - Added deterministic anchor guarantees for `recognition_enforcement_issue`:
+    - `("local:ru/gpk","409")`, `("local:ru/gpk","410")`, `("local:ru/gpk","411")`
+
+### Corpus verification (source availability)
+
+Corpus file confirmed present:
+
+- `Ruske_zakony/Гражданский процессуальный кодекс Российской Федерации  от 1-u.txt`
+
+Articles confirmed in corpus:
+
+- `ГПК 409`, `410`, `411`, `412`
+
+### Test coverage and result
+
+- Extended contract/regression tests in:
+  - `backend/tests/russia/test_russia_search_taxonomy_contract.py`
+- Added checks that:
+  - recognition queries trigger `recognition_enforcement_issue`
+  - recognition cluster surfaces `409–411`
+  - `407` does not leak into recognition cluster
+  - deterministic fallback includes `409` for empty retrieval
+- Verification runs:
+  - `pytest backend/tests/russia/test_russia_search_taxonomy_contract.py -q` → **PASS**
+  - `pytest backend/tests/russia/test_russia_api_contract.py backend/tests/russia/test_topic_search_taxonomy_alignment.py -q` → **PASS**
+
+---
+
+## Step 19 — Agent 2 truth-validation against corpus (COMPLETED 2026-04-14)
+
+### Goal
+
+Verify whether generated Agent 2 legal claims are materially consistent with real Russian law corpus text (not only structurally valid JSON).
+
+### Implemented
+
+- Added validation utility:
+  - `backend/scripts/validate_agent2_truth.py`
+- Script capabilities:
+  - reads Agent 2 response JSON from integration logs
+  - extracts cited legal provisions from strategy sections
+  - loads corresponding source law files from corpus (`Ruske_zakony/*`)
+  - compares claim intent against article text with deterministic heuristics
+  - outputs per-claim status:
+    - `OK`
+    - `SUSPECT`
+    - `MISMATCH`
+- Windows console safety:
+  - UTF-8 stdout configuration to avoid Cyrillic encoding crashes
+
+### Validation outcome (latest run)
+
+- Totals:
+  - `OK`: 5
+  - `SUSPECT`: 3
+  - `MISMATCH`: 2
+- Key mismatches identified:
+  - `ГПК 438` used as deadline-restoration basis in appellate context (should be `ГПК 112`)
+  - over-broad procedural claims linked to weakly matching anchors in some sections
+- Key suspect signals:
+  - `ГПК 329` occasionally treated as core reversal anchor (should not replace `ГПК 330`)
+  - `ЕКПЧ 5` cited in civil fair-trial context where `ЕКПЧ 6` is primary
+
+### Next hardening targets
+
+- Keep retrieval anchors strict for procedural clusters (already reinforced in Step 18 tests).
+- Add Agent 2 guardrails: reject doctrinally incompatible citation-role pairs.
+- Extend validation ruleset incrementally for new issue clusters.
+
 ---
 
 | Date | Decision | Reason |
@@ -1796,3 +1985,98 @@ then hybrid/dense/sparse ranking.
 | 2026-04-13 | Russian HTTP API only under `/api/russia/*`; Czech unchanged | Explicit separation; no Russian retrieval via `/api/search/answer` in this step |
 | 2026-04-13 | Retrieval taxonomy limited to active procedural/alimony scope | Deterministic precision; avoid broad corpus drift in current phase |
 | 2026-04-13 | One shared taxonomy-first engine for API and internal service | Guarantees consistent routing/boost/filter logic across entry points |
+| 2026-04-14 | Introduce dedicated `POST /api/russia/strategy` for Agent 2 closed-evidence reasoning | Avoids mixing with generic strategy contract; enforces structured legal evidence input |
+| 2026-04-14 | Fail fast when expected Russia routes are missing at runtime | Prevents silent downgrade to generic endpoints and makes deploy drift visible immediately |
+| 2026-04-14 | Rebuild backend container to pick up route-level API changes | Running `ai-legal-backend` image was stale; OpenAPI lacked `/api/russia/strategy` until rebuild |
+| 2026-04-14 | Keep integration flow strict: `case_summary -> Agent1 -> legal_evidence_pack -> Agent2` | Ensures legal grounding and deterministic closed-evidence behavior |
+| 2026-04-14 | Split `foreign_service_issue` from `recognition_enforcement_issue` | `ГПК 407` (service abroad) and `ГПК 409–411` (recognition/enforcement of foreign judgments) are distinct procedural clusters |
+| 2026-04-14 | Add deterministic anchor guarantees for recognition cluster | Supported recognition queries must never return empty even if retrieval candidates are missing |
+| 2026-04-14 | Add post-generation truth-validation script for Agent 2 output | Structural contract pass is insufficient; legal meaning must be checked against corpus text |
+
+---
+
+## Operator Runbook — Russia API (quick reproduce, 5 commands)
+
+Use this whenever the runtime state is unknown or after any backend deploy.
+
+### 1 — Verify routes are live
+
+```bash
+curl -s http://localhost:8032/openapi.json | python -c \
+  "import sys,json; p=json.load(sys.stdin)['paths']; \
+   print('search:', '/api/russia/search' in p); \
+   print('strategy:', '/api/russia/strategy' in p)"
+```
+
+Expected output:
+```
+search: True
+strategy: True
+```
+
+### 2 — Rebuild backend (if routes missing or stale image suspected)
+
+```bash
+docker compose up -d --build backend
+```
+
+Wait ~30 s, then re-run step 1 to confirm both routes are present.
+
+### 3 — Smoke-test Agent 1 (search)
+
+```bash
+curl -s -X POST http://localhost:8032/api/russia/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"алименты на ребенка","top_k":3}' \
+  | python -c "import sys,json; r=json.load(sys.stdin); print('hits:', len(r.get('results',[])))"
+```
+
+Expected: `hits: 3` (or ≤ top_k if corpus smaller).
+
+### 4 — Smoke-test Agent 2 (strategy, closed-evidence)
+
+```bash
+curl -s -X POST http://localhost:8032/api/russia/strategy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "case_id": "SMOKE-RU-1",
+      "jurisdiction": "Russia",
+      "cleaned_summary": "Истец требует взыскания алиментов. Ответчик заявляет о процессуальных нарушениях извещения.",
+      "legal_evidence_pack": {
+        "primary_sources": [{"law": "GPK RF", "article": "113"}],
+        "supporting_sources": [{"law": "GPK RF", "article": "9"}],
+        "retrieved_articles": [
+          {"law": "GPK RF", "article": "113", "excerpt": "Лица, участвующие в деле... извещаются..."}
+        ],
+        "matched_issues": ["notice_issue"],
+        "retrieval_notes": ["smoke-runbook"]
+      }
+    },
+    "strict_reliability": true,
+    "max_repair_attempts": 1
+  }' \
+  | python -c "import sys,json; r=json.load(sys.stdin); print('sections:', list(r.get('output',{}).keys()))"
+```
+
+Expected output includes all strategy sections:
+```
+sections: ['case_theory', 'primary_legal_basis', 'supporting_legal_basis', 'fact_to_law_mapping',
+           'strategic_assessment', 'missing_evidence_gaps',
+           'recommended_next_steps', 'draft_argument_direction', 'insufficient_support_items']
+```
+
+### 5 — Run full E2E integration (from ai-legal-case-rag-service)
+
+```bash
+# Run from the ai-legal-case-rag-service repo root
+python scripts/russia_e2e_integration.py
+```
+
+Expected final lines:
+```
+Agent 1 /api/russia/search   → 200
+Agent 2 /api/russia/strategy → 200
+```
+
+Any non-200 status → check container logs: `docker logs ai-legal-backend --tail 50`

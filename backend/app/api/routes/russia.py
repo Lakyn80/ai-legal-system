@@ -35,13 +35,18 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.core.dependencies import (
+    get_agent2_legal_strategy_service,
     get_russia_focus_taxonomy_service,
     get_russian_retrieval_service,
 )
+from app.modules.common.agents.agent2_legal_strategy.errors import Agent2Error
+from app.modules.common.agents.agent2_legal_strategy.input_schemas import LegalStrategyAgent2Input
+from app.modules.common.agents.agent2_legal_strategy.schemas import LegalStrategyAgent2Output
+from app.modules.common.agents.agent2_legal_strategy.service import Agent2RunConfig
 from app.modules.common.legal_taxonomy.service import FocusLegalTaxonomyService
 from app.modules.russia.retrieval.taxonomy_first import taxonomy_first_search
 
@@ -203,6 +208,24 @@ class InterpreterIssueRequest(BaseModel):
     )
     top_k_primary: int = Field(default=8, ge=1, le=20)
     top_k_support: int = Field(default=3, ge=0, le=10)
+
+
+class StrategyRequest(BaseModel):
+    input: LegalStrategyAgent2Input
+    strict_reliability: bool = Field(
+        default=True,
+        description="Disallow unsupported legal conclusions when evidence is thin.",
+    )
+    max_repair_attempts: int = Field(
+        default=1,
+        ge=0,
+        le=2,
+        description="How many contract-repair retries are allowed after invalid citation output.",
+    )
+
+
+class StrategyOut(BaseModel):
+    output: LegalStrategyAgent2Output
 
 
 # ---------------------------------------------------------------------------
@@ -382,3 +405,31 @@ def interpreter_issue(
         supporting_results=[_evidence_to_out(e) for e in result.supporting_results],
         combined_results=[_evidence_to_out(e) for e in result.combined_results],
     )
+
+
+@router.post(
+    "/russia/strategy",
+    response_model=StrategyOut,
+    summary="Agent 2 legal strategy from evidence pack",
+    description=(
+        "Runs Agent 2 over a closed evidence pack. "
+        "Does not perform retrieval and does not allow legal citations outside the pack."
+    ),
+    tags=["russia"],
+)
+def strategy(
+    request: StrategyRequest,
+    agent2=Depends(get_agent2_legal_strategy_service),
+) -> StrategyOut:
+    try:
+        run_result = agent2.run(
+            request.input,
+            config=Agent2RunConfig(
+                strict_reliability=request.strict_reliability,
+                max_repair_attempts=request.max_repair_attempts,
+            ),
+        )
+    except Agent2Error as exc:
+        # Controlled failure path: keep API deterministic and avoid leaking internals.
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+    return StrategyOut(output=run_result.output)
