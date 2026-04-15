@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection: str = "legal_documents"
     qdrant_collection_alias: str | None = None
+    russia_qdrant_collection: str = Field(
+        default="legal_case_chunks_ru_clean",
+        validation_alias=AliasChoices("RUSSIA_QDRANT_COLLECTION"),
+    )
     redis_enabled: bool = False
     redis_url: str = "redis://redis:6379/0"
     exact_cache_enabled: bool = False
@@ -46,8 +50,25 @@ class Settings(BaseSettings):
     embedding_fallback_provider: str | None = "hash"
     embedding_hash_dimension: int = 384
     llm_provider: str = "mock"
-    llm_model: str = "gpt-4o-mini"
-    llm_api_key: str | None = None
+    llm_model: str = Field(
+        default="gpt-4o-mini",
+        validation_alias=AliasChoices("LLM_MODEL"),
+    )
+    llm_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_API_KEY", "OPENAI_API_KEY"),
+    )
+    openai_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENAI_BASE_URL"),
+        description="Optional API base URL for OpenAI-compatible endpoints.",
+    )
+    llm_max_output_tokens: int = Field(
+        default=5000,
+        ge=1,
+        validation_alias=AliasChoices("LLM_MAX_OUTPUT_TOKENS", "LLM_DEPTH"),
+        description="Max completion tokens for OpenAI-compatible chat models (Agent 2, agent_pravnik, etc.).",
+    )
 
     chunk_size: int = 1200
     chunk_overlap: int = 180

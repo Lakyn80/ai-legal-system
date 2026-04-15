@@ -1,5 +1,5 @@
 """
-Dense vector search against russian_laws_v1.
+Dense vector search against the configured Russian collection.
 
 Retrieval strategy:
   1. Embed query text via the project EmbeddingService
@@ -26,7 +26,7 @@ from app.modules.russia.retrieval.schemas import RussianSearchResult
 
 log = logging.getLogger(__name__)
 
-COLLECTION_NAME = "russian_laws_v1"
+DEFAULT_COLLECTION_NAME = "russian_laws_v1"
 _DENSE_VECTOR_NAME = "dense"
 _QDRANT_TIMEOUT = 30
 
@@ -40,9 +40,16 @@ class RussianDenseRetriever:
         results = retriever.search("расторжение трудового договора", law_id="local:ru/tk", top_k=10)
     """
 
-    def __init__(self, embedding_service: EmbeddingService, url: str, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        embedding_service: EmbeddingService,
+        url: str,
+        api_key: str | None = None,
+        collection_name: str = DEFAULT_COLLECTION_NAME,
+    ) -> None:
         self._embedding = embedding_service
         self._client = QdrantClient(url=url, api_key=api_key, timeout=_QDRANT_TIMEOUT)
+        self._collection_name = collection_name
 
     def search(
         self,
@@ -51,7 +58,7 @@ class RussianDenseRetriever:
         top_k: int = 10,
     ) -> list[RussianSearchResult]:
         """
-        Embed `query` and search russian_laws_v1 for the most similar chunks.
+        Embed `query` and search the configured RU collection for the most similar chunks.
 
         Args:
             query:   Free-text query in Russian (or any language the embedding model handles)
@@ -72,7 +79,7 @@ class RussianDenseRetriever:
 
         try:
             response = self._client.query_points(
-                collection_name=COLLECTION_NAME,
+                collection_name=self._collection_name,
                 query=query_vector,
                 using=_DENSE_VECTOR_NAME,
                 query_filter=query_filter,

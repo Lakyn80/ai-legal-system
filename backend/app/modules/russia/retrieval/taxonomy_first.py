@@ -21,7 +21,7 @@ class TaxonomySearchOutcome:
 _ISSUE_ANCHOR_GUARANTEES: dict[str, tuple[tuple[str, str], ...]] = {
     "interpreter_issue": (("local:ru/gpk", "9"), ("local:ru/gpk", "162")),
     "language_issue": (("local:ru/gpk", "9"),),
-    "notice_issue": (("local:ru/gpk", "113"),),
+    "notice_issue": (("local:ru/gpk", "113"), ("local:ru/gpk", "167")),
     "service_address_issue": (("local:ru/gpk", "116"), ("local:ru/gpk", "113")),
     "foreign_party_issue": (("local:ru/gpk", "9"), ("local:ru/gpk", "398"), ("local:ru/gpk", "162")),
     "appellate_reversal_issue": (("local:ru/gpk", "330"),),
@@ -358,26 +358,20 @@ def _ensure_per_issue_primary_anchors(
     top_k: int,
 ) -> list[RussianSearchResult]:
     """
-    Post-processing guarantee: for each detected issue, ensure its first (primary)
-    guaranteed anchor is present in the result set.
+    Post-processing guarantee: ensure ALL guaranteed anchors for every detected issue
+    are present in the result set.
 
-    This handles the case where the combined-anchor check passes via one issue's
-    anchor (e.g. GPK 113 from notice_issue) but leaves out the primary anchor of
-    a co-detected issue (e.g. GPK 407 for foreign_service_issue, GPK 112 for
-    missed_deadline_due_to_service_issue).
-
-    Missing anchors are injected as deterministic_anchor_fallback references.
+    Iterates over every anchor in _ISSUE_ANCHOR_GUARANTEES for each detected issue
+    and injects any that are missing as deterministic_anchor_fallback references.
+    This guarantees complete legal coverage for multi-issue cases (e.g. Czech-Russian
+    alimony case requires GPK 112 + 407 + 330 alongside notice/interpreter anchors).
     """
     seen = {(r.law_id, str(r.article_num or "")) for r in rows}
     missing: list[tuple[str, str]] = []
     for issue in issue_flags:
-        issue_anchors = _ISSUE_ANCHOR_GUARANTEES.get(issue, ())
-        if not issue_anchors:
-            continue
-        # Only require the FIRST (primary) anchor per issue to keep results tight
-        primary = issue_anchors[0]
-        if primary not in seen:
-            missing.append(primary)
+        for anchor in _ISSUE_ANCHOR_GUARANTEES.get(issue, ()):
+            if anchor not in seen and anchor not in missing:
+                missing.append(anchor)
 
     if not missing:
         return rows

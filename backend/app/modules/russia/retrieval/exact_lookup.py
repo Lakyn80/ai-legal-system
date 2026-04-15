@@ -1,5 +1,5 @@
 """
-Exact article lookup against russian_laws_v1.
+Exact article lookup against the configured Russian collection.
 
 Retrieval strategy: pure payload filter — no vector search.
   Filter: law_id == <law_id> AND article_num == <article_num>
@@ -28,7 +28,7 @@ from app.modules.russia.retrieval.schemas import ArticleLookupResult, RussianChu
 
 log = logging.getLogger(__name__)
 
-COLLECTION_NAME = "russian_laws_v1"
+DEFAULT_COLLECTION_NAME = "russian_laws_v1"
 _SCROLL_BATCH = 100   # max chunks per article is ~30; 100 covers any realistic article
 
 
@@ -43,8 +43,14 @@ class RussianExactLookup:
             print(result.full_text)
     """
 
-    def __init__(self, url: str, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        api_key: str | None = None,
+        collection_name: str = DEFAULT_COLLECTION_NAME,
+    ) -> None:
         self._client = QdrantClient(url=url, api_key=api_key, timeout=30)
+        self._collection_name = collection_name
 
     def get_article(
         self,
@@ -77,7 +83,7 @@ class RussianExactLookup:
 
         try:
             scroll_result = self._client.scroll(
-                collection_name=COLLECTION_NAME,
+                collection_name=self._collection_name,
                 scroll_filter=scroll_filter,
                 limit=_SCROLL_BATCH,
                 with_payload=True,

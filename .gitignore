@@ -11,6 +11,10 @@ backend/tests/__pycache__/
 *.pyc
 frontend/.next/
 frontend/node_modules/
+frontend-new/.next/
+frontend-new/node_modules/
+frontend-new/tsconfig.tsbuildinfo
+
 qdrant_storage/
 
 # Data files — not versioned
@@ -31,3 +35,13 @@ enrich_laws.py
 Ruske_zakony/
 null
 LEGAL_SYSTEM_STATE_*.md
+
+# Test & demo output artifacts
+*.log
+agent2_test_output*.log
+agent_pravnik_demo_output.json
+agent_pravnik_llm_run.json
+full_agent2_pravnik.json
+full_agent2_pravnik_console.log
+live-audit-*/
+backend/artifacts/

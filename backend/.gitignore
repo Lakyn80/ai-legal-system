@@ -1,0 +1,36 @@
+# Python deps — never commit, Docker pulls them
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# PyTorch / ML model weights — huge, never in git
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.pkl
+*.h5
+models/
+model_cache/
+.cache/
+huggingface/
+torch_cache/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Local env
+.env
+.env.*

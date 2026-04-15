@@ -55,6 +55,7 @@ class FakeRussianRetrievalService:
                 _result(law_id="local:ru/gpk", article="112", score=0.36),
                 _result(law_id="local:ru/gpk", article="116", score=0.34),
                 _result(law_id="local:ru/gpk", article="117", score=0.32),
+                _result(law_id="local:ru/gpk", article="167", score=0.33),
                 _result(law_id="local:ru/gpk", article="330", score=0.38),
                 _result(law_id="local:ru/gpk", article="398", score=0.33),
                 _result(law_id="local:ru/gpk", article="407", score=0.37),
@@ -517,4 +518,93 @@ def test_regression_recognition_enforcement_cluster_uses_409_411_not_407(
     assert arts & {"409", "410", "411"}
     assert "407" not in arts, (
         f"GPK 407 must not dominate recognition/enforcement cluster for query: {query!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Full case regression: Czech-Russian alimony + procedural defects
+# ---------------------------------------------------------------------------
+
+CZECH_RU_ALIMONY_QUERY = (
+    "Я гражданин Чехии. В России без переводчика и без уведомления "
+    "по моему чешскому адресу рассмотрели дело об алиментах. "
+    "Как мне обжаловать решение и восстановить срок?"
+)
+
+CZECH_RU_REQUIRED_ISSUES = {
+    "interpreter_issue",
+    "notice_issue",
+    "service_address_issue",
+    "foreign_party_issue",
+    "alimony_issue",
+    "foreign_service_issue",
+    "missed_deadline_due_to_service_issue",
+    "appellate_reversal_issue",
+}
+
+CZECH_RU_REQUIRED_ANCHORS = {
+    ("local:ru/gpk", "9"),
+    ("local:ru/gpk", "112"),
+    ("local:ru/gpk", "113"),
+    ("local:ru/gpk", "116"),
+    ("local:ru/gpk", "162"),
+    ("local:ru/gpk", "167"),
+    ("local:ru/gpk", "407"),
+    ("local:ru/sk", "80"),
+}
+
+
+def test_full_czech_ru_alimony_case_issue_detection(client: TestClient):
+    """All required issue flags must be detected for the Czech-Russian alimony case."""
+    r = client.post("/api/russia/search", json={
+        "query": CZECH_RU_ALIMONY_QUERY, "mode": "hybrid", "top_k": 12,
+    })
+    assert r.status_code == 200
+    d = r.json()
+    detected = set(d["issue_flags"])
+    missing = CZECH_RU_REQUIRED_ISSUES - detected
+    assert not missing, f"Missing issue flags: {missing}. Detected: {detected}"
+
+
+def test_full_czech_ru_alimony_case_anchor_coverage(client: TestClient):
+    """All required legal anchors must be in results (retrieved or deterministic)."""
+    r = client.post("/api/russia/search", json={
+        "query": CZECH_RU_ALIMONY_QUERY, "mode": "hybrid", "top_k": 12,
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["taxonomy_applied"] is True
+    got = {(item["law_id"], item["article_num"]) for item in d["results"]}
+    missing = CZECH_RU_REQUIRED_ANCHORS - got
+    assert not missing, f"Missing anchors: {missing}. Got: {got}"
+
+
+def test_full_czech_ru_alimony_case_forbidden_articles_absent(client: TestClient):
+    """GPK 438 and GPK 329 must never appear for this case."""
+    r = client.post("/api/russia/search", json={
+        "query": CZECH_RU_ALIMONY_QUERY, "mode": "hybrid", "top_k": 12,
+    })
+    assert r.status_code == 200
+    arts = {x["article_num"] for x in r.json()["results"]}
+    assert not (arts & {"438", "329"}), f"Forbidden articles found: {arts & {'438', '329'}}"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_issue"),
+    [
+        ("восстановить срок на апелляцию", "missed_deadline_due_to_service_issue"),
+        ("как восстановить срок на обжалование", "missed_deadline_due_to_service_issue"),
+        ("хочу обжаловать решение суда", "appellate_reversal_issue"),
+        ("как подать апелляционную жалобу", "appellate_reversal_issue"),
+        ("документы направили по чешскому адресу", "foreign_service_issue"),
+        ("иностранному адресу не направили извещение", "foreign_service_issue"),
+    ],
+)
+def test_case_specific_phrase_detection(client: TestClient, query: str, expected_issue: str):
+    """Case-specific phrases added for Czech-Russian alimony coverage must trigger correct issues."""
+    r = client.post("/api/russia/search", json={"query": query, "mode": "hybrid", "top_k": 5})
+    assert r.status_code == 200
+    d = r.json()
+    assert expected_issue in d["issue_flags"], (
+        f"Query {query!r} must detect {expected_issue}. Got: {d['issue_flags']}"
     )

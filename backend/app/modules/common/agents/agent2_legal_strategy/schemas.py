@@ -29,7 +29,10 @@ class PrimaryBasisItem(BaseModel):
     provision: SourceRef
     why_it_matters: str = Field(
         ...,
-        description="Why this norm matters for this case, grounded in supplied excerpts.",
+        description=(
+            "Substantive litigation analysis: FACT → LEGAL RULE (from excerpt) → VIOLATION → CONSEQUENCE. "
+            "Minimum several sentences; no generic 'supports the issue' filler."
+        ),
     )
     connected_facts: list[str] = Field(
         default_factory=list,
@@ -41,7 +44,7 @@ class SupportingBasisItem(BaseModel):
     provision: SourceRef
     how_it_reinforces: str = Field(
         ...,
-        description="How this supporting norm backs or frames the primary case.",
+        description="2+ sentences: how this norm reinforces the primary line; causal, not generic.",
     )
 
 
@@ -52,7 +55,7 @@ class FactToLawRow(BaseModel):
     assessment_strength: Strength
     comment: str = Field(
         ...,
-        description="Analytical comment; flag uncertainty if facts or excerpts are thin.",
+        description="Mini-brief: FACT → RULE → VIOLATION → CONSEQUENCE for this issue; multi-sentence.",
     )
 
 
@@ -91,7 +94,7 @@ class LegalStrategyAgent2Output(BaseModel):
     schema_version: str = Field(default="agent2_legal_strategy.v1")
     case_theory: str = Field(
         ...,
-        description="One short paragraph: core legal problem in this case.",
+        description="Dense multi-paragraph theory of the case; procedural and material threads.",
     )
     primary_legal_basis: list[PrimaryBasisItem] = Field(default_factory=list)
     supporting_legal_basis: list[SupportingBasisItem] = Field(default_factory=list)
@@ -105,7 +108,7 @@ class LegalStrategyAgent2Output(BaseModel):
     recommended_next_steps: list[NextStepItem] = Field(default_factory=list)
     draft_argument_direction: str = Field(
         ...,
-        description='Plain-language lead-in, e.g. "The case should argue that..."',
+        description="Full litigation thesis: lead argument, attack vectors, relief; not one sentence.",
     )
     insufficient_support_items: list[InsufficientSupportItem] = Field(
         default_factory=list,

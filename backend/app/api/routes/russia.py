@@ -12,7 +12,7 @@ POST /russia/interpreter-issue — case-text-to-evidence bridge (interpreter/lan
 
 All endpoints:
   - accept and return UTF-8 / Cyrillic text natively
-  - call only the verified Russian retrieval stack (russian_laws_v1 collection)
+  - call only the verified Russian retrieval stack (settings.russia_qdrant_collection)
   - perform no LLM synthesis
   - contain no agent logic
 
@@ -33,18 +33,23 @@ chunked encoding issues):
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.core.config import get_settings
 from app.core.dependencies import (
     get_agent2_legal_strategy_service,
+    get_russian_case_reconstruction_service,
     get_russia_focus_taxonomy_service,
     get_russian_retrieval_service,
 )
 from app.modules.common.agents.agent2_legal_strategy.errors import Agent2Error
-from app.modules.common.agents.agent2_legal_strategy.input_schemas import LegalStrategyAgent2Input
+from app.modules.common.agents.agent2_legal_strategy.input_schemas import LegalEvidencePack, LegalStrategyAgent2Input
+from app.modules.common.agents.agent2_legal_strategy.extraction_schemas import LegalExtractionAgent2Output
 from app.modules.common.agents.agent2_legal_strategy.schemas import LegalStrategyAgent2Output
 from app.modules.common.agents.agent2_legal_strategy.service import Agent2RunConfig
 from app.modules.common.legal_taxonomy.service import FocusLegalTaxonomyService
@@ -228,6 +233,24 @@ class StrategyOut(BaseModel):
     output: LegalStrategyAgent2Output
 
 
+class StrategyExtractionOut(BaseModel):
+    output: LegalExtractionAgent2Output
+
+
+class StrategyExtractionFromCaseRequest(BaseModel):
+    case_id: str = Field(..., min_length=1, max_length=256)
+    jurisdiction: str = Field(default="Russia", max_length=128)
+    cleaned_summary: str = Field(default="", max_length=50_000)
+    facts: list[str] = Field(default_factory=list)
+    timeline: list[str] = Field(default_factory=list)
+    issue_flags: list[str] = Field(default_factory=list)
+    claims_or_questions: list[str] = Field(default_factory=list)
+    optional_missing_items: list[str] = Field(default_factory=list)
+    legal_evidence_pack: LegalEvidencePack | None = None
+    strict_reliability: bool = Field(default=True)
+    max_repair_attempts: int = Field(default=1, ge=0, le=2)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -273,6 +296,20 @@ def _evidence_to_out(e) -> IssueEvidenceOut:
         is_tombstone=e.is_tombstone,
         source_role=e.source_role,
     )
+
+
+def _persist_extraction_artifact(output: LegalExtractionAgent2Output) -> None:
+    try:
+        settings = get_settings()
+        artifact_dir = Path(settings.storage_path) / "agent2_extraction" / output.case_id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        artifact_path = artifact_dir / f"{stamp}.json"
+        artifact_path.write_text(output.model_dump_json(indent=2), encoding="utf-8")
+        output.source_artifact = str(artifact_path)
+    except Exception as exc:  # pragma: no cover
+        case_id = getattr(output, "case_id", "<unknown>")
+        log.warning("agent2_extraction_artifact_write_failed case_id=%s err=%s", case_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -433,3 +470,85 @@ def strategy(
         # Controlled failure path: keep API deterministic and avoid leaking internals.
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     return StrategyOut(output=run_result.output)
+
+
+@router.post(
+    "/russia/strategy/extraction",
+    response_model=StrategyExtractionOut,
+    summary="Agent 2 legal extraction from case documents",
+    description=(
+        "Runs Agent 2 in extraction mode and returns grouped case documents, issue IDs, and defense blocks. "
+        "Use this endpoint when input.case_documents is provided and deterministic IDs are required."
+    ),
+    tags=["russia"],
+)
+def strategy_extraction(
+    request: StrategyRequest,
+    agent2=Depends(get_agent2_legal_strategy_service),
+) -> StrategyExtractionOut:
+    try:
+        run_result = agent2.run_extraction(
+            request.input,
+            config=Agent2RunConfig(
+                strict_reliability=request.strict_reliability,
+                max_repair_attempts=request.max_repair_attempts,
+            ),
+        )
+    except Agent2Error as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+    output = run_result.output
+    _persist_extraction_artifact(output)
+    return StrategyExtractionOut(output=output)
+
+
+@router.post(
+    "/russia/strategy/extraction/from-case",
+    response_model=StrategyExtractionOut,
+    summary="Agent 2 extraction by case_id from RU clean Qdrant",
+    description=(
+        "Reconstructs full case documents from Russian clean chunk collection by case_id, "
+        "then runs Agent 2 extraction and persists the extraction artifact."
+    ),
+    tags=["russia"],
+)
+def strategy_extraction_from_case(
+    request: StrategyExtractionFromCaseRequest,
+    agent2=Depends(get_agent2_legal_strategy_service),
+    recon=Depends(get_russian_case_reconstruction_service),
+) -> StrategyExtractionOut:
+    try:
+        case_documents = recon.reconstruct_case_documents(request.case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "case_reconstruction_failed", "message": str(exc)}) from exc
+
+    evidence_pack = request.legal_evidence_pack
+    if evidence_pack is None:
+        evidence_pack = recon.build_evidence_pack_from_chunks(request.case_id)
+
+    inp = LegalStrategyAgent2Input(
+        case_id=request.case_id,
+        jurisdiction=request.jurisdiction,
+        cleaned_summary=request.cleaned_summary,
+        facts=request.facts,
+        timeline=request.timeline,
+        issue_flags=request.issue_flags,
+        claims_or_questions=request.claims_or_questions,
+        legal_evidence_pack=evidence_pack,
+        optional_missing_items=request.optional_missing_items,
+        case_documents=case_documents,
+    )
+
+    try:
+        run_result = agent2.run_extraction(
+            inp,
+            config=Agent2RunConfig(
+                strict_reliability=request.strict_reliability,
+                max_repair_attempts=request.max_repair_attempts,
+            ),
+        )
+    except Agent2Error as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+
+    output = run_result.output
+    _persist_extraction_artifact(output)
+    return StrategyExtractionOut(output=output)

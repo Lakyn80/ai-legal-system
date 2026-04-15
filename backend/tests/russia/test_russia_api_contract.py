@@ -9,9 +9,14 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.dependencies import get_agent2_legal_strategy_service, get_russian_retrieval_service
+from app.core.dependencies import (
+    get_agent2_legal_strategy_service,
+    get_russian_case_reconstruction_service,
+    get_russian_retrieval_service,
+)
 from app.main import app
 from app.modules.common.agents.agent2_legal_strategy.errors import Agent2OutputContractError
+from app.modules.common.agents.agent2_legal_strategy.extraction_schemas import LegalExtractionAgent2Output
 from app.modules.common.agents.agent2_legal_strategy.schemas import (
     LegalStrategyAgent2Output,
     MissingEvidenceBlock,
@@ -146,6 +151,98 @@ class FakeAgent2Service:
 
         return _RunResult()
 
+    def run_extraction(self, inp, *, config=None):
+        class _RunResult:
+            def __init__(self):
+                self.output = LegalExtractionAgent2Output.model_validate({
+                    "schema_version": "agent2_legal_extraction.v1",
+                    "case_id": inp.case_id,
+                    "source_artifact": "",
+                    "groups": [
+                        {
+                            "group_id": f"case::{inp.case_id}::group::judgments",
+                            "group_name": "judgments",
+                            "documents": [
+                                {
+                                    "doc_id": f"case::{inp.case_id}::doc::0",
+                                    "logical_index": 0,
+                                    "primary_document_id": "judgment-1",
+                                    "document_type": "judgment",
+                                    "document_date": "2026-04-01",
+                                    "document_role": "court",
+                                    "title": "Judgment",
+                                    "is_core_document": True,
+                                    "source_pages": ["p.1-4"],
+                                    "full_text_reference": "blob://judgment-1",
+                                    "summary": "Court judgment content.",
+                                    "key_points": ["Notice issue discussed."],
+                                    "evidence_value": "Core procedural source.",
+                                    "procedural_value": "Appeal basis.",
+                                }
+                            ],
+                        }
+                    ],
+                    "issues": [
+                        {
+                            "issue_id": f"case::{inp.case_id}::issue::notice_issue",
+                            "issue_slug": "notice_issue",
+                            "issue_title": "Notice Issue",
+                            "factual_basis": ["No proper notice."],
+                            "supporting_doc_ids": [f"case::{inp.case_id}::doc::0"],
+                            "court_or_opponent_position": "",
+                            "problem_description": "Notice defect alleged.",
+                            "defense_argument": "Proceedings should be re-opened.",
+                            "legal_basis": [],
+                            "requested_consequence": "Set aside judgment.",
+                            "evidence_gaps": [],
+                        }
+                    ],
+                    "defense_blocks": [
+                        {
+                            "defense_id": f"case::{inp.case_id}::defense::notice_issue",
+                            "issue_id": f"case::{inp.case_id}::issue::notice_issue",
+                            "title": "Defense: Notice Issue",
+                            "argument_markdown": "Detailed argument.",
+                            "supporting_doc_ids": [f"case::{inp.case_id}::doc::0"],
+                            "legal_basis_refs": [],
+                        }
+                    ],
+                })
+
+        return _RunResult()
+
+
+class FakeCaseReconstructionService:
+    def reconstruct_case_documents(self, case_id: str):
+        from app.modules.common.agents.agent2_legal_strategy.input_schemas import CaseDocumentInput
+
+        if case_id == "missing":
+            raise ValueError("No chunks found for case")
+        return [
+            CaseDocumentInput(
+                primary_document_id="doc-1",
+                document_type="judgment",
+                document_date="2026-04-01",
+                document_role="court",
+                title="Judgment",
+                content="Full reconstructed text for case.",
+                source_pages=["p.1", "p.2"],
+                full_text_reference="qdrant://legal_case_chunks_ru_clean/C-CASE/doc-1",
+            )
+        ]
+
+    def build_evidence_pack_from_chunks(self, case_id: str):
+        from app.modules.common.agents.agent2_legal_strategy.input_schemas import LegalEvidencePack
+        from app.modules.common.agents.agent2_legal_strategy.schemas import SourceRef
+
+        return LegalEvidencePack(
+            primary_sources=[SourceRef(law="GPK RF", article="113")],
+            supporting_sources=[],
+            retrieved_articles=[],
+            matched_issues=[],
+            retrieval_notes=["fake_reconstruction"],
+        )
+
 
 @pytest.fixture
 def client():
@@ -153,6 +250,7 @@ def client():
     app.router.on_startup.clear()
     app.dependency_overrides[get_russian_retrieval_service] = lambda: FakeRussianRetrievalService()
     app.dependency_overrides[get_agent2_legal_strategy_service] = lambda: FakeAgent2Service()
+    app.dependency_overrides[get_russian_case_reconstruction_service] = lambda: FakeCaseReconstructionService()
     try:
         with TestClient(app) as tc:
             yield tc
@@ -201,7 +299,7 @@ def test_get_article_tombstone_flags(client: TestClient):
 
 def test_post_search_cyrillic_query_echoed(client: TestClient):
     q = "переводчик в гражданском процессе"
-    r = client.post("/api/russia/search", json={"query": q, "mode": "hybrid"})
+    r = client.post("/api/russia/search", json={"query": q, "mode": "hybrid", "top_k": 1})
     assert r.status_code == 200
     d = r.json()
     assert d["query"] == q
@@ -288,3 +386,63 @@ def test_post_strategy_contract_error_returns_422(client: TestClient):
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert detail["code"] == "agent2_output_contract_violation"
+
+
+def test_post_strategy_extraction_returns_grouped_output(client: TestClient):
+    payload = {
+        "input": {
+            "case_id": "C-EX1",
+            "jurisdiction": "Russia",
+            "cleaned_summary": "Service and notice defects.",
+            "facts": ["No notice", "Late awareness"],
+            "issue_flags": ["notice_issue"],
+            "claims_or_questions": ["Build extraction."],
+            "legal_evidence_pack": {
+                "primary_sources": [{"law": "GPK RF", "article": "113"}],
+                "supporting_sources": [],
+                "retrieved_articles": [{"law": "GPK RF", "article": "113", "excerpt": "Notice"}],
+                "matched_issues": ["notice_issue"],
+                "retrieval_notes": ["test"],
+            },
+            "case_documents": [
+                {
+                    "primary_document_id": "judgment-1",
+                    "document_type": "judgment",
+                    "document_date": "2026-04-01",
+                    "document_role": "court",
+                    "title": "Judgment",
+                    "content": "Full document text",
+                    "source_pages": ["p.1-4"],
+                    "full_text_reference": "blob://judgment-1",
+                }
+            ],
+        }
+    }
+    r = client.post("/api/russia/strategy/extraction", json=payload)
+    assert r.status_code == 200
+    data = r.json()["output"]
+    assert data["schema_version"] == "agent2_legal_extraction.v1"
+    assert data["groups"][0]["group_id"] == "case::C-EX1::group::judgments"
+    assert data["groups"][0]["documents"][0]["doc_id"] == "case::C-EX1::doc::0"
+
+
+def test_post_strategy_extraction_from_case_works(client: TestClient):
+    payload = {
+        "case_id": "C-CASE",
+        "jurisdiction": "Russia",
+        "issue_flags": ["notice_issue"],
+        "claims_or_questions": ["Build extraction from reconstructed docs."],
+    }
+    r = client.post("/api/russia/strategy/extraction/from-case", json=payload)
+    assert r.status_code == 200
+    out = r.json()["output"]
+    assert out["schema_version"] == "agent2_legal_extraction.v1"
+    assert out["case_id"] == "C-CASE"
+
+
+def test_post_strategy_extraction_from_case_missing_returns_422(client: TestClient):
+    payload = {"case_id": "missing"}
+    r = client.post("/api/russia/strategy/extraction/from-case", json=payload)
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["code"] == "case_reconstruction_failed"

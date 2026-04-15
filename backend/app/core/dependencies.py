@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from app.modules.common.responses.builders import SearchResponseBuilder
     from app.modules.common.storage.file_storage import FileStorageService
     from app.modules.czechia.retrieval.service import CzechLawRetrievalService
+    from app.modules.russia.retrieval.case_reconstruction import RussianCaseReconstructionService
     from app.modules.registry import JurisdictionRegistry
 
 
@@ -330,7 +331,7 @@ def get_russian_retrieval_service():
     """
     Dependency for the dedicated Russian retrieval service.
 
-    Uses russian_laws_v1 collection — completely separate from the Czech pipeline.
+    Uses settings.russia_qdrant_collection for Russian retrieval.
     IDF checkpoint is resolved from the configured storage_path so it works in
     both the Docker container (/app/storage) and local dev environments.
     """
@@ -345,6 +346,7 @@ def get_russian_retrieval_service():
         qdrant_url=settings.qdrant_url,
         qdrant_api_key=settings.qdrant_api_key,
         idf_checkpoint_path=idf_path if idf_path.exists() else None,
+        collection_name=settings.russia_qdrant_collection,
     )
 
 
@@ -353,6 +355,18 @@ def get_russia_focus_taxonomy_service():
     from app.modules.common.legal_taxonomy.service import get_russia_focus_taxonomy_service
 
     return get_russia_focus_taxonomy_service()
+
+
+@lru_cache(maxsize=1)
+def get_russian_case_reconstruction_service() -> RussianCaseReconstructionService:
+    from app.modules.russia.retrieval.case_reconstruction import RussianCaseReconstructionService
+
+    settings = get_settings()
+    return RussianCaseReconstructionService(
+        qdrant_url=settings.qdrant_url,
+        qdrant_api_key=settings.qdrant_api_key,
+        collection_name=settings.russia_qdrant_collection,
+    )
 
 
 def get_app_settings() -> Settings:

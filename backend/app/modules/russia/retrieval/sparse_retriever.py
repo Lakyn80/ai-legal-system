@@ -1,5 +1,5 @@
 """
-BM25 sparse retriever for the russian_laws_v1 Qdrant collection.
+BM25 sparse retriever for the configured Russian Qdrant collection.
 
 Uses RussianBM25Encoder and IDFTable from the ingestion pipeline so that
 query and document token spaces are always identical.
@@ -31,7 +31,7 @@ from qdrant_client.http import models as qm
 
 from app.modules.russia.retrieval.schemas import RussianSearchResult
 
-COLLECTION_NAME = "russian_laws_v1"
+DEFAULT_COLLECTION_NAME = "russian_laws_v1"
 _SPARSE_VECTOR_NAME = "sparse"
 _QDRANT_TIMEOUT = 30
 
@@ -59,9 +59,11 @@ class RussianSparseRetriever:
         url: str,
         api_key: str | None = None,
         idf_checkpoint_path: Path | None = None,
+        collection_name: str = DEFAULT_COLLECTION_NAME,
     ) -> None:
         self._client = QdrantClient(url=url, api_key=api_key, timeout=_QDRANT_TIMEOUT)
         self._idf_path = idf_checkpoint_path or _IDF_CHECKPOINT_PATH
+        self._collection_name = collection_name
         self._encoder = None       # lazy init
         self._encoder_attempted = False
 
@@ -99,7 +101,7 @@ class RussianSparseRetriever:
 
         try:
             response = self._client.query_points(
-                collection_name=COLLECTION_NAME,
+                collection_name=self._collection_name,
                 query=qm.SparseVector(
                     indices=list(indices),
                     values=[float(v) for v in values],

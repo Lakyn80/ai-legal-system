@@ -60,17 +60,24 @@ class RussianRetrievalService:
         qdrant_api_key: str | None = None,
         idf_checkpoint_path: Path | None = None,
         taxonomy_service: FocusLegalTaxonomyService | None = None,
+        collection_name: str = "russian_laws_v1",
     ) -> None:
-        self._exact = RussianExactLookup(url=qdrant_url, api_key=qdrant_api_key)
+        self._exact = RussianExactLookup(
+            url=qdrant_url,
+            api_key=qdrant_api_key,
+            collection_name=collection_name,
+        )
         self._dense = RussianDenseRetriever(
             embedding_service=embedding_service,
             url=qdrant_url,
             api_key=qdrant_api_key,
+            collection_name=collection_name,
         )
         self._sparse = RussianSparseRetriever(
             url=qdrant_url,
             api_key=qdrant_api_key,
             idf_checkpoint_path=idf_checkpoint_path,
+            collection_name=collection_name,
         )
         self._analyzer = RussianQueryAnalyzer()
         self._planner = RussianRetrievalPlanner()
