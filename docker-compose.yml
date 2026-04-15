@@ -61,12 +61,26 @@ services:
 
   frontend:
     build:
-      context: ./frontend-new
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8030}
     container_name: ai-legal-frontend
     depends_on:
       - backend
+    environment:
+      NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8030}
     ports:
       - "${FRONTEND_PORT:-3010}:3000"
+    restart: unless-stopped
+
+  frontend-new:
+    build:
+      context: ./frontend-new
+    container_name: ai-legal-frontend-new
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_NEW_PORT:-3016}:3000"
     restart: unless-stopped
 
 volumes:
