@@ -1,5 +1,5 @@
 import { CaseDocument } from "@/lib/types";
-import { documentTypeLabels } from "@/lib/mockData";
+import { documentTypeLabels } from "@/lib/documentTypeLabels";
 import { CalendarDays, Tag, Gavel } from "lucide-react";
 
 interface FullCaseViewProps {

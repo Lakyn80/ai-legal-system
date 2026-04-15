@@ -11,6 +11,7 @@ from collections import defaultdict
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from app.modules.common.agents.agent2_legal_strategy.input_schemas import (
     CaseDocumentInput,
@@ -87,21 +88,34 @@ class RussianCaseReconstructionService:
         query_filter = qm.Filter(
             must=[qm.FieldCondition(key="case_id", match=qm.MatchValue(value=case_id))]
         )
-        while True:
-            points, next_offset = self._client.scroll(
-                collection_name=self._collection_name,
-                scroll_filter=query_filter,
-                with_payload=True,
-                with_vectors=False,
-                limit=512,
-                offset=offset,
+        try:
+            while True:
+                points, next_offset = self._client.scroll(
+                    collection_name=self._collection_name,
+                    scroll_filter=query_filter,
+                    with_payload=True,
+                    with_vectors=False,
+                    limit=512,
+                    offset=offset,
+                )
+                for p in points:
+                    if p.payload:
+                        chunks.append(p.payload)
+                if next_offset is None:
+                    break
+                offset = next_offset
+        except UnexpectedResponse as exc:
+            is_missing_collection = exc.status_code == 404 and (
+                "doesn't exist" in exc.content.decode("utf-8", errors="ignore").lower()
+                or "not found: collection" in exc.content.decode("utf-8", errors="ignore").lower()
             )
-            for p in points:
-                if p.payload:
-                    chunks.append(p.payload)
-            if next_offset is None:
-                break
-            offset = next_offset
+            if is_missing_collection:
+                raise ValueError(
+                    f"Qdrant collection '{self._collection_name}' was not found. "
+                    "Run RU case chunk indexing for legal_case_chunks_ru_clean or override "
+                    "RUSSIA_QDRANT_COLLECTION to a compatible case-chunk collection."
+                ) from exc
+            raise
         return chunks
 
     def reconstruct_case_documents(self, case_id: str) -> list[CaseDocumentInput]:

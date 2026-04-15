@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CaseDocument } from "@/lib/types";
-import { documentTypeLabels } from "@/lib/mockData";
+import { documentTypeLabels } from "@/lib/documentTypeLabels";
 import { PageNavigation } from "./PageNavigation";
 import { CalendarDays, Tag } from "lucide-react";
 

@@ -1,5 +1,5 @@
 import { CaseDocument } from "@/lib/types";
-import { documentTypeLabels } from "@/lib/mockData";
+import { documentTypeLabels } from "@/lib/documentTypeLabels";
 import { Panel } from "@/components/ui/Panel";
 import { CalendarDays, FileText, Gavel, Users } from "lucide-react";
 

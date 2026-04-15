@@ -79,6 +79,9 @@ services:
     container_name: ai-legal-frontend-new
     depends_on:
       - backend
+    environment:
+      BACKEND_URL: ${FRONTEND_NEW_BACKEND_URL:-http://backend:8000/api}
+      NEXT_PUBLIC_DEFAULT_CASE_ID: ${FRONTEND_NEW_DEFAULT_CASE_ID:-2f393699-ebaa-4c79-b84c-ad9af75d0bcf}
     ports:
       - "${FRONTEND_NEW_PORT:-3016}:3000"
     restart: unless-stopped

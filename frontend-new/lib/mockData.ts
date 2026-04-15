@@ -173,6 +173,8 @@ export const documentTypeLabels: Record<string, string> = {
 };
 
 export const mockAnalysisOutput: AnalysisOutput = {
+  runId: "mock-run-id",
+  caseId: "mock-case-id",
   issueSummary:
     "Spor o náhradu škody 485.000 Kč za prodlení se zhotovením díla (rekonstrukce třídící linky). Klíčová otázka: zda novelizace zákona o odpadech (1. 1. 2023) představuje liberační důvod dle § 2913 odst. 2 OZ.",
   legalOptions: [
@@ -197,4 +199,5 @@ export const mockAnalysisOutput: AnalysisOutput = {
     "Zajistit odborné vyjádření k legislativní změně k. 1. 1. 2023",
     "Ověřit termín promlčení a procesní lhůty",
   ],
+  defenseBlocks: [],
 };
